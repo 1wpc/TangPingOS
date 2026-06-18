@@ -31,6 +31,12 @@ static volatile struct limine_memmap_request memmap_request = {
     .revision = 0,
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_module_request module_request = {
+    .id = LIMINE_MODULE_REQUEST_ID,
+    .revision = 0,
+};
+
 __attribute__((used, section(".limine_requests_start")))
 static volatile uint64_t requests_start_marker[4] = LIMINE_REQUESTS_START_MARKER;
 
@@ -411,7 +417,7 @@ void _start(void) {
         scheduler_create_task("task-b", demo_task_b, NULL) != 0) {
         kernel_panic("failed to create demo tasks");
     }
-    user_demo_init();
+    user_init_from_modules(module_request.response);
     scheduler_dump_tasks();
     x86_64_interrupts_enable();
 

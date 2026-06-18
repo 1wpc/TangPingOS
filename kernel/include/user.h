@@ -1,6 +1,8 @@
 #ifndef VOIDOS_USER_H
 #define VOIDOS_USER_H
 
-void user_demo_init(void);
+#include <limine.h>
+
+void user_init_from_modules(struct limine_module_response *modules);
 
 #endif

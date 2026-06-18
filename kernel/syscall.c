@@ -5,6 +5,10 @@
 
 #define SYSCALL_WRITE 1
 #define SYSCALL_EXIT  2
+#define SYSCALL_GETPID 3
+#define SYSCALL_YIELD  4
+#define SYSCALL_SLEEP_TICKS 5
+#define SYSCALL_BRK 6
 
 static void syscall_write(const char *buf, uint64_t len) {
     for (uint64_t i = 0; i < len; i++) {
@@ -28,6 +32,18 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYSCALL_EXIT:
             return scheduler_exit_current(frame, frame->rdi);
+        case SYSCALL_GETPID:
+            frame->rax = scheduler_current_pid();
+            break;
+        case SYSCALL_YIELD:
+            frame->rax = 0;
+            return scheduler_yield_current(frame);
+        case SYSCALL_SLEEP_TICKS:
+            frame->rax = 0;
+            return scheduler_sleep_current(frame, frame->rdi);
+        case SYSCALL_BRK:
+            frame->rax = scheduler_set_current_brk(frame->rdi);
+            break;
         default:
             console_printf("unknown syscall: %u\n", frame->rax);
             frame->rax = (uint64_t)-1;

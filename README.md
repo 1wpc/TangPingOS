@@ -18,12 +18,19 @@ Current kernel features:
   sharing the kernel half of the address map.
 - Minimal process table fields in the scheduler: PID, state, CR3, kernel stack,
   and exit status.
+- User ELF loading through a Limine module: `userspace/init/init.c` is built as
+  `init.elf`, copied into the ISO, preloaded by Limine, parsed by the kernel,
+  and mapped into a fresh user address space as the `init` process.
 
 Current user syscalls:
 
 ```text
 rax=1 write(buf=rdi, len=rsi) -> rax=len
 rax=2 exit(status=rdi)        -> does not return
+rax=3 getpid()                -> rax=pid
+rax=4 yield()                 -> rax=0, scheduler may switch tasks
+rax=5 sleep_ticks(ticks=rdi)  -> rax=0, task sleeps until that PIT tick
+rax=6 brk(new_break=rdi)      -> rax=current/new program break
 ```
 
 ## Requirements
@@ -62,5 +69,10 @@ Build outputs:
 
 ```text
 build/kernel.elf
+build/init.elf
 build/voidOS.iso
 ```
+
+`init.elf` is not loaded from a kernel filesystem yet. Limine reads it from the
+ISO and passes the file contents to the kernel as an in-memory module. The same
+ELF loader can later be reused for initrd or real filesystem files.

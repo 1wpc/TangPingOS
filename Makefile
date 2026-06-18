@@ -2,6 +2,7 @@ ARCH := x86_64
 BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
 KERNEL := $(BUILD_DIR)/kernel.elf
+INIT := $(BUILD_DIR)/init.elf
 ISO := $(BUILD_DIR)/voidOS.iso
 
 BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
@@ -69,17 +70,48 @@ LDFLAGS := \
 	-z max-page-size=0x1000 \
 	-T linker/kernel.ld
 
+USER_CFLAGS := \
+	-target x86_64-elf \
+	-std=c11 \
+	-ffreestanding \
+	-fno-stack-protector \
+	-fno-stack-check \
+	-fno-lto \
+	-fno-pic \
+	-fno-pie \
+	-m64 \
+	-mabi=sysv \
+	-mno-red-zone \
+	-mno-mmx \
+	-mno-sse \
+	-mno-sse2 \
+	-O2 \
+	-Wall \
+	-Wextra
+
+USER_LDFLAGS := \
+	-m elf_x86_64 \
+	-nostdlib \
+	-static \
+	-z max-page-size=0x1000 \
+	-T linker/user.ld
+
 KERNEL_SOURCES := $(shell find kernel -name '*.c')
 KERNEL_ASM_SOURCES := $(shell find kernel -name '*.S')
 KERNEL_C_OBJECTS := $(patsubst kernel/%.c,$(BUILD_DIR)/kernel/%.o,$(KERNEL_SOURCES))
 KERNEL_ASM_OBJECTS := $(patsubst kernel/%.S,$(BUILD_DIR)/kernel/%.o,$(KERNEL_ASM_SOURCES))
 KERNEL_OBJECTS := $(KERNEL_C_OBJECTS) $(KERNEL_ASM_OBJECTS)
 
-.PHONY: all kernel iso run test-exception test-page-fault clean check-tools check-uefi
+INIT_SOURCES := $(shell find userspace/init -name '*.c')
+INIT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(INIT_SOURCES))
+
+.PHONY: all kernel init iso run test-exception test-page-fault clean check-tools check-uefi
 
 all: iso
 
 kernel: $(KERNEL)
+
+init: $(INIT)
 
 iso: check-tools $(ISO)
 
@@ -104,6 +136,9 @@ test-page-fault:
 $(KERNEL): $(KERNEL_OBJECTS) linker/kernel.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJECTS) -o $@
 
+$(INIT): $(INIT_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(INIT_OBJECTS) -o $@
+
 $(BUILD_DIR)/kernel/%.o: kernel/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -112,10 +147,15 @@ $(BUILD_DIR)/kernel/%.o: kernel/%.S | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) -target x86_64-elf -m64 -c $< -o $@
 
-$(ISO): $(KERNEL) boot/limine.conf
+$(BUILD_DIR)/userspace/%.o: userspace/%.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -c $< -o $@
+
+$(ISO): $(KERNEL) $(INIT) boot/limine.conf
 	rm -rf $(ISO_ROOT)
 	mkdir -p $(ISO_ROOT)/EFI/BOOT
 	cp $(KERNEL) $(ISO_ROOT)/kernel.elf
+	cp $(INIT) $(ISO_ROOT)/init.elf
 	cp boot/limine.conf $(ISO_ROOT)/limine.conf
 	cp $(LIMINE_BIOS_SYS) $(ISO_ROOT)/limine-bios.sys
 	cp $(LIMINE_BIOS_CD) $(ISO_ROOT)/limine-bios-cd.bin
