@@ -4,6 +4,7 @@
 
 #define VFS_MAX_FILESYSTEMS 8
 #define VFS_NAME_MAX 32
+#define VFS_MAX_DIRENTS_PER_FS 64
 
 struct vfs_filesystem {
     char name[VFS_NAME_MAX];
@@ -65,19 +66,31 @@ int vfs_list_dir(const char *path, uint64_t index, struct vfs_dirent *out) {
         return -1;
     }
 
+    uint64_t seen = 0;
     for (uint64_t i = 0; i < filesystem_count; i++) {
         struct vfs_filesystem *fs = &filesystems[i];
         if (fs->list == 0) {
             continue;
         }
 
-        int result = fs->list(path, index, out, fs->context);
-        if (result >= 0) {
-            return result;
+        for (uint64_t local_index = 0; local_index < VFS_MAX_DIRENTS_PER_FS; local_index++) {
+            struct vfs_dirent candidate;
+            int result = fs->list(path, local_index, &candidate, fs->context);
+            if (result < 0) {
+                break;
+            }
+            if (result == 0) {
+                break;
+            }
+            if (seen == index) {
+                *out = candidate;
+                return 1;
+            }
+            seen++;
         }
     }
 
-    return -1;
+    return 0;
 }
 
 uint64_t vfs_read_file(const char *path, uint64_t offset, void *buffer, uint64_t buffer_len) {

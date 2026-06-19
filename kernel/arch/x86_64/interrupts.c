@@ -1,10 +1,10 @@
 #include <console.h>
-#include <input.h>
 #include <memory.h>
 #include <scheduler.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <syscall.h>
+#include <tty.h>
 #include <x86_64/interrupt_frame.h>
 #include <x86_64/io.h>
 
@@ -307,16 +307,7 @@ static void keyboard_handle(void) {
         return;
     }
 
-    input_push_key(c);
-    scheduler_wake_input_waiters();
-    if (c == '\n') {
-        console_write("\n");
-    } else if (c == '\b') {
-        console_write("\b \b");
-    } else {
-        char s[2] = {c, '\0'};
-        console_write(s);
-    }
+    tty_on_key(c);
 }
 
 static inline uint64_t read_cr2(void) {
@@ -353,9 +344,6 @@ struct interrupt_frame *x86_64_interrupt_handler(struct interrupt_frame *frame) 
         switch (irq) {
             case 0:
                 timer_ticks++;
-                if ((timer_ticks % 100) == 0) {
-                    console_printf("timer tick: %u\n", timer_ticks);
-                }
                 frame = scheduler_on_timer_tick(frame);
                 break;
             case 1:

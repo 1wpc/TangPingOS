@@ -5,6 +5,8 @@
 
 #define VFS_DIRENT_NAME_MAX 64
 #define VFS_DIRENT_TYPE_FILE 1
+#define VFS_DIRENT_TYPE_DIR 2
+#define VFS_DIRENT_TYPE_DEVICE 3
 
 struct vfs_dirent {
     char name[VFS_DIRENT_NAME_MAX];

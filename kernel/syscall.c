@@ -1,8 +1,8 @@
 #include <console.h>
-#include <input.h>
 #include <scheduler.h>
 #include <stdint.h>
 #include <syscall.h>
+#include <tty.h>
 #include <usercopy.h>
 #include <vfs.h>
 
@@ -17,7 +17,8 @@
 #define SYSCALL_READ 9
 #define SYSCALL_CLOSE 10
 #define SYSCALL_GETDENTS 11
-#define FD_STDIN 0
+#define SYSCALL_WRITE_FD 12
+#define SYSCALL_DUP2 13
 #define SYSCALL_WRITE_CHUNK_SIZE 128
 #define SYSCALL_PATH_MAX 128
 #define SYSCALL_READ_CHUNK_SIZE 512
@@ -26,7 +27,7 @@ static uint64_t min_u64(uint64_t a, uint64_t b) {
     return a < b ? a : b;
 }
 
-static uint64_t syscall_write(const char *buf, uint64_t len) {
+static uint64_t syscall_write_buffer(const char *buf, uint64_t len) {
     char chunk[SYSCALL_WRITE_CHUNK_SIZE];
     uint64_t written = 0;
 
@@ -40,15 +41,20 @@ static uint64_t syscall_write(const char *buf, uint64_t len) {
             return (uint64_t)-1;
         }
 
-        for (uint64_t i = 0; i < to_copy; i++) {
-            char c[2] = {chunk[i], '\0'};
-            console_write(c);
-        }
+        tty_write(chunk, to_copy);
 
         written += to_copy;
     }
 
     return len;
+}
+
+static uint64_t syscall_write(uint64_t fd, const char *buf, uint64_t len) {
+    if (!scheduler_current_fd_is_tty((int)fd)) {
+        return (uint64_t)-1;
+    }
+
+    return syscall_write_buffer(buf, len);
 }
 
 static uint64_t syscall_read_file(const char *path, uint64_t offset, void *buffer, uint64_t len) {
@@ -96,8 +102,8 @@ static uint64_t syscall_read(uint64_t fd, void *buffer, uint64_t len, int *would
     }
 
     uint64_t read;
-    if (fd == FD_STDIN) {
-        read = input_read((char *)kernel_buffer, to_read);
+    if (scheduler_current_fd_is_tty((int)fd)) {
+        read = tty_read((char *)kernel_buffer, to_read);
         if (read == 0 && to_read > 0) {
             *would_block = 1;
             return 0;
@@ -156,7 +162,7 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
 
     switch (frame->rax) {
         case SYSCALL_WRITE:
-            frame->rax = syscall_write((const char *)frame->rdi, frame->rsi);
+            frame->rax = syscall_write(frame->rdi, (const char *)frame->rsi, frame->rdx);
             break;
         case SYSCALL_EXIT:
             return scheduler_exit_current(frame, frame->rdi);
@@ -205,6 +211,12 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
                 (void *)frame->rdx,
                 frame->rcx
             );
+            break;
+        case SYSCALL_WRITE_FD:
+            frame->rax = syscall_write(frame->rdi, (const char *)frame->rsi, frame->rdx);
+            break;
+        case SYSCALL_DUP2:
+            frame->rax = scheduler_dup2_current_file((int)frame->rdi, (int)frame->rsi);
             break;
         default:
             console_printf("unknown syscall: %u\n", frame->rax);

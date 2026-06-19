@@ -1,4 +1,5 @@
 #include <console.h>
+#include <devfs.h>
 #include <initrd.h>
 #include <limine.h>
 #include <memory.h>
@@ -333,30 +334,6 @@ void kernel_panic(const char *message) {
     kernel_halt();
 }
 
-static void demo_task_a(void *arg) {
-    (void)arg;
-    uint64_t heartbeat = 0;
-
-    for (;;) {
-        console_printf("task A heartbeat %u\n", heartbeat++);
-        for (uint64_t i = 0; i < 10; i++) {
-            __asm__ volatile ("hlt");
-        }
-    }
-}
-
-static void demo_task_b(void *arg) {
-    (void)arg;
-    uint64_t heartbeat = 0;
-
-    for (;;) {
-        console_printf("task B heartbeat %u\n", heartbeat++);
-        for (uint64_t i = 0; i < 10; i++) {
-            __asm__ volatile ("hlt");
-        }
-    }
-}
-
 void _start(void) {
     serial_init();
     serial_write("TangPingOS serial online\n");
@@ -415,11 +392,8 @@ void _start(void) {
 
     x86_64_interrupts_init();
     scheduler_init();
-    if (scheduler_create_task("task-a", demo_task_a, NULL) != 0 ||
-        scheduler_create_task("task-b", demo_task_b, NULL) != 0) {
-        kernel_panic("failed to create demo tasks");
-    }
     vfs_init();
+    devfs_init();
     initrd_init(module_request.response);
     user_init_from_modules(module_request.response);
     scheduler_dump_tasks();

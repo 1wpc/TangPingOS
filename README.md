@@ -41,6 +41,17 @@ Current kernel features:
   mode through `read(0, ...)`.
 - Blocking stdin reads: if `read(0, ...)` has no available keyboard data, the
   current user task sleeps until IRQ1 wakes it after the next keypress.
+- A tiny TTY device layer: keyboard input and console output are now routed
+  through a kernel TTY abstraction, and `/dev/tty` can be opened by user mode as
+  the shell input device.
+- A minimal `devfs` backend registered with VFS. Root directory enumeration now
+  includes `/dev`, and `ls /dev` exposes the `tty` device node.
+- `dup2(oldfd, newfd)` for basic descriptor redirection. Standard fds 0/1/2
+  default to TTY behavior but can now be overwritten by duplicated descriptors.
+- Per-process open-file objects with reference counts. Duplicated descriptors
+  now share the same file offset instead of copying it.
+- Quiet boot: the old demo heartbeat tasks are no longer created by default, so
+  serial output stays focused on kernel and init activity.
 - User pointer validation and safe copy helpers for syscall buffers. Syscalls
   now copy strings and I/O buffers through page-table-checked
   `copy_from_user`/`copy_to_user` helpers instead of blindly dereferencing
@@ -57,7 +68,9 @@ Current kernel features:
 Current user syscalls:
 
 ```text
-rax=1 write(buf=rdi, len=rsi) -> rax=len
+rax=1 write(fd=rdi,
+            buf=rsi,
+            len=rdx)           -> rax=bytes written, or -1
 rax=2 exit(status=rdi)        -> does not return
 rax=3 getpid()                -> rax=pid
 rax=4 yield()                 -> rax=0, scheduler may switch tasks
@@ -76,6 +89,11 @@ rax=11 getdents(path=rdi,
                 index=rsi,
                 dirent=rdx,
                 len=rcx)      -> rax=1 entry, 0 EOF, or -1
+rax=12 write_fd(fd=rdi,
+                buf=rsi,
+                len=rdx)      -> compatibility alias for write
+rax=13 dup2(oldfd=rdi,
+            newfd=rsi)        -> rax=newfd, or -1
 ```
 
 ## Requirements

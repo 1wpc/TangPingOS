@@ -10,9 +10,11 @@
 #define SYS_READ 9
 #define SYS_CLOSE 10
 #define SYS_GETDENTS 11
+#define SYS_DUP2 13
 
 #define DIRENT_NAME_MAX 64
 #define STDIN_FD 0
+#define STDOUT_FD 1
 #define SHELL_LINE_MAX 128
 
 struct dirent {
@@ -54,8 +56,8 @@ static uint64_t syscall4(uint64_t number, uint64_t arg0, uint64_t arg1, uint64_t
     return result;
 }
 
-static uint64_t sys_write(const char *message, uint64_t length) {
-    return syscall2(SYS_WRITE, (uint64_t)message, length);
+static uint64_t sys_write(uint64_t fd, const char *message, uint64_t length) {
+    return syscall3(SYS_WRITE, fd, (uint64_t)message, length);
 }
 
 static uint64_t sys_getpid(void) {
@@ -84,6 +86,10 @@ static uint64_t sys_close(uint64_t fd) {
 
 static uint64_t sys_getdents(const char *path, uint64_t index, struct dirent *dirent) {
     return syscall4(SYS_GETDENTS, (uint64_t)path, index, (uint64_t)dirent, sizeof(*dirent));
+}
+
+static uint64_t sys_dup2(uint64_t old_fd, uint64_t new_fd) {
+    return syscall2(SYS_DUP2, old_fd, new_fd);
 }
 
 static void *sys_sbrk(uint64_t increment) {
@@ -154,7 +160,7 @@ static uint64_t copy_string(char *dst, const char *src) {
 }
 
 static void write_literal(const char *message, uint64_t length) {
-    sys_write(message, length);
+    sys_write(STDOUT_FD, message, length);
 }
 
 static uint64_t string_length(const char *s) {
@@ -166,19 +172,19 @@ static uint64_t string_length(const char *s) {
 }
 
 static void write_cstr(const char *s) {
-    sys_write(s, string_length(s));
+    sys_write(STDOUT_FD, s, string_length(s));
 }
 
 static void write_u64_decimal(uint64_t value) {
     char buffer[20];
     uint64_t len = u64_to_decimal(value, buffer);
-    sys_write(buffer, len);
+    sys_write(STDOUT_FD, buffer, len);
 }
 
 static void write_u64_hex(uint64_t value) {
     char buffer[18];
     uint64_t len = u64_to_hex(value, buffer);
-    sys_write(buffer, len);
+    sys_write(STDOUT_FD, buffer, len);
 }
 
 static void write_dirent_name(const struct dirent *dirent) {
@@ -186,7 +192,7 @@ static void write_dirent_name(const struct dirent *dirent) {
     while (len < DIRENT_NAME_MAX && dirent->name[len] != '\0') {
         len++;
     }
-    sys_write(dirent->name, len);
+    sys_write(STDOUT_FD, dirent->name, len);
 }
 
 static void cmd_ls(const char *path) {
@@ -241,7 +247,7 @@ static void cmd_cat(const char *path, char *buffer, uint64_t buffer_len) {
         if (read_len == 0) {
             break;
         }
-        sys_write(buffer, read_len);
+        sys_write(STDOUT_FD, buffer, read_len);
         if (read_len < buffer_len) {
             break;
         }
@@ -257,7 +263,7 @@ static void run_startup_self_test(char *heap) {
     static const char usercopy_fail[] = "init.elf: bad user pointer was accepted\n";
 
     uint64_t heap_len = copy_string(heap, heap_message);
-    sys_write(heap, heap_len);
+    sys_write(STDOUT_FD, heap, heap_len);
 
     uint64_t fd = sys_open("/hello.txt");
     if (fd == (uint64_t)-1) {
@@ -304,12 +310,54 @@ static const char *skip_spaces(const char *s) {
     return s;
 }
 
-static void read_line(char *line, uint64_t max_len) {
+static void run_dup2_stdin_self_test(char *buffer, uint64_t buffer_len) {
+    static const char dup2_ok[] = "init.elf: dup2(file, stdin) ok\n";
+    static const char dup2_offset_ok[] = "init.elf: dup2 shared offset ok\n";
+    static const char dup2_fail[] = "init.elf: dup2(file, stdin) failed\n";
+
+    if (buffer_len < 6) {
+        sys_exit(14);
+    }
+
+    uint64_t fd = sys_open("/hello.txt");
+    if (fd == (uint64_t)-1) {
+        write_literal(dup2_fail, sizeof(dup2_fail) - 1);
+        sys_exit(14);
+    }
+    if (sys_dup2(fd, STDIN_FD) != STDIN_FD) {
+        sys_close(fd);
+        write_literal(dup2_fail, sizeof(dup2_fail) - 1);
+        sys_exit(14);
+    }
+
+    uint64_t read_len = sys_read(STDIN_FD, buffer, 5);
+    buffer[read_len < buffer_len ? read_len : buffer_len - 1] = '\0';
+    if (read_len == 5 && starts_with(buffer, "Hello")) {
+        write_literal(dup2_ok, sizeof(dup2_ok) - 1);
+    } else {
+        write_literal(dup2_fail, sizeof(dup2_fail) - 1);
+        sys_close(fd);
+        sys_exit(14);
+    }
+
+    read_len = sys_read(fd, buffer, 1);
+    if (read_len == 1 && buffer[0] == ' ') {
+        write_literal(dup2_offset_ok, sizeof(dup2_offset_ok) - 1);
+    } else {
+        write_literal(dup2_fail, sizeof(dup2_fail) - 1);
+        sys_close(fd);
+        sys_exit(14);
+    }
+
+    sys_close(fd);
+}
+
+static void read_line(uint64_t input_fd, char *line, uint64_t max_len) {
     uint64_t len = 0;
 
     for (;;) {
         char c;
-        uint64_t read = sys_read(STDIN_FD, &c, 1);
+        uint64_t read = sys_read(input_fd, &c, 1);
         if (read == 0) {
             sys_yield();
             continue;
@@ -339,7 +387,7 @@ static void read_line(char *line, uint64_t max_len) {
 }
 
 static void run_shell_command(const char *line, char *buffer, uint64_t buffer_len) {
-    static const char help[] = "commands: help, ls /, cat /hello.txt\n";
+    static const char help[] = "commands: help, ls /, ls /dev, cat /hello.txt\n";
     static const char unknown[] = "unknown command\n";
     static const char usage_cat[] = "usage: cat /path\n";
     static const char usage_ls[] = "usage: ls /\n";
@@ -354,6 +402,10 @@ static void run_shell_command(const char *line, char *buffer, uint64_t buffer_le
     }
     if (strings_equal(line, "ls") || strings_equal(line, "ls /")) {
         cmd_ls("/");
+        return;
+    }
+    if (strings_equal(line, "ls /dev")) {
+        cmd_ls("/dev");
         return;
     }
     if (starts_with(line, "ls ")) {
@@ -374,7 +426,7 @@ static void run_shell_command(const char *line, char *buffer, uint64_t buffer_le
 }
 
 __attribute__((noreturn))
-static void run_interactive_shell(char *buffer, uint64_t buffer_len) {
+static void run_interactive_shell(uint64_t input_fd, char *buffer, uint64_t buffer_len) {
     static const char ready[] = "init.elf: interactive shell ready\n";
     static const char prompt[] = "TangPingOS> ";
     char line[SHELL_LINE_MAX];
@@ -382,7 +434,7 @@ static void run_interactive_shell(char *buffer, uint64_t buffer_len) {
     write_literal(ready, sizeof(ready) - 1);
     for (;;) {
         write_literal(prompt, sizeof(prompt) - 1);
-        read_line(line, sizeof(line));
+        read_line(input_fd, line, sizeof(line));
         run_shell_command(line, buffer, buffer_len);
     }
 }
@@ -393,6 +445,12 @@ void _start(void) {
     static const char brk_prefix[] = "init.elf: brk=";
     static const char heap_fail[] = "init.elf: sbrk failed\n";
     static const char shell_prefix[] = "init.elf: startup commands\n";
+    static const char tty_ok[] = "init.elf: /dev/tty open\n";
+    static const char tty_write_ok[] = "init.elf: write(/dev/tty) ok\n";
+    static const char bad_fd_write_rejected[] = "init.elf: bad write fd rejected\n";
+    static const char dup2_tty_ok[] = "init.elf: dup2(/dev/tty, stdio) ok\n";
+    static const char dup2_tty_fail[] = "init.elf: dup2(/dev/tty, stdio) failed\n";
+    static const char tty_fallback[] = "init.elf: /dev/tty unavailable, using stdin\n";
     static const char newline[] = "\n";
 
     write_literal(pid_prefix, sizeof(pid_prefix) - 1);
@@ -412,11 +470,34 @@ void _start(void) {
     run_startup_self_test(heap);
     write_literal(shell_prefix, sizeof(shell_prefix) - 1);
     cmd_ls("/");
+    cmd_ls("/dev");
     cmd_cat("/hello.txt", heap, 256);
+    run_dup2_stdin_self_test(heap, 256);
+
+    uint64_t input_fd = sys_open("/dev/tty");
+    if (input_fd == (uint64_t)-1) {
+        write_literal(tty_fallback, sizeof(tty_fallback) - 1);
+        input_fd = STDIN_FD;
+    } else {
+        write_literal(tty_ok, sizeof(tty_ok) - 1);
+        if (sys_dup2(input_fd, STDIN_FD) != STDIN_FD ||
+            sys_dup2(input_fd, STDOUT_FD) != STDOUT_FD) {
+            write_literal(dup2_tty_fail, sizeof(dup2_tty_fail) - 1);
+            sys_exit(15);
+        }
+        write_literal(dup2_tty_ok, sizeof(dup2_tty_ok) - 1);
+        sys_write(input_fd, tty_write_ok, sizeof(tty_write_ok) - 1);
+    }
+
+    if (sys_write(99, tty_write_ok, sizeof(tty_write_ok) - 1) == (uint64_t)-1) {
+        write_literal(bad_fd_write_rejected, sizeof(bad_fd_write_rejected) - 1);
+    } else {
+        sys_exit(13);
+    }
 
 #ifdef TANGPINGOS_TEST_USER_FAULT
     *(volatile uint64_t *)0 = 0x55;
 #endif
 
-    run_interactive_shell(heap, 256);
+    run_interactive_shell(input_fd, heap, 256);
 }
