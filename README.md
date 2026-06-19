@@ -33,6 +33,9 @@ Current kernel features:
   still uses initrd as the first backend.
 - Root directory enumeration through a minimal `getdents()` syscall, so user
   mode can discover initrd files instead of knowing every filename upfront.
+- A tiny non-interactive init command runner. `init.elf` now has builtin
+  `ls`/`cat`-style command functions that exercise `getdents`, `open`, `read`,
+  and `close`, giving later keyboard/TTY shell work a cleaner userland shape.
 - User pointer validation and safe copy helpers for syscall buffers. Syscalls
   now copy strings and I/O buffers through page-table-checked
   `copy_from_user`/`copy_to_user` helpers instead of blindly dereferencing
