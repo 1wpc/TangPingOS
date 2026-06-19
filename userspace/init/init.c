@@ -12,6 +12,8 @@
 #define SYS_GETDENTS 11
 
 #define DIRENT_NAME_MAX 64
+#define STDIN_FD 0
+#define SHELL_LINE_MAX 128
 
 struct dirent {
     char name[DIRENT_NAME_MAX];
@@ -62,10 +64,6 @@ static uint64_t sys_getpid(void) {
 
 static void sys_yield(void) {
     syscall2(SYS_YIELD, 0, 0);
-}
-
-static void sys_sleep_ticks(uint64_t ticks) {
-    syscall2(SYS_SLEEP_TICKS, ticks, 0);
 }
 
 static uint64_t sys_brk(uint64_t new_break) {
@@ -277,6 +275,118 @@ static void run_startup_self_test(char *heap) {
     sys_close(fd);
 }
 
+static int strings_equal(const char *a, const char *b) {
+    uint64_t i = 0;
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+static int starts_with(const char *s, const char *prefix) {
+    uint64_t i = 0;
+    while (prefix[i] != '\0') {
+        if (s[i] != prefix[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return 1;
+}
+
+static const char *skip_spaces(const char *s) {
+    while (*s == ' ') {
+        s++;
+    }
+    return s;
+}
+
+static void read_line(char *line, uint64_t max_len) {
+    uint64_t len = 0;
+
+    for (;;) {
+        char c;
+        uint64_t read = sys_read(STDIN_FD, &c, 1);
+        if (read == 0) {
+            sys_yield();
+            continue;
+        }
+        if (read == (uint64_t)-1) {
+            line[0] = '\0';
+            return;
+        }
+
+        if (c == '\r') {
+            c = '\n';
+        }
+        if (c == '\n') {
+            line[len] = '\0';
+            return;
+        }
+        if (c == '\b') {
+            if (len > 0) {
+                len--;
+            }
+            continue;
+        }
+        if (len + 1 < max_len) {
+            line[len++] = c;
+        }
+    }
+}
+
+static void run_shell_command(const char *line, char *buffer, uint64_t buffer_len) {
+    static const char help[] = "commands: help, ls /, cat /hello.txt\n";
+    static const char unknown[] = "unknown command\n";
+    static const char usage_cat[] = "usage: cat /path\n";
+    static const char usage_ls[] = "usage: ls /\n";
+
+    line = skip_spaces(line);
+    if (line[0] == '\0') {
+        return;
+    }
+    if (strings_equal(line, "help")) {
+        write_literal(help, sizeof(help) - 1);
+        return;
+    }
+    if (strings_equal(line, "ls") || strings_equal(line, "ls /")) {
+        cmd_ls("/");
+        return;
+    }
+    if (starts_with(line, "ls ")) {
+        write_literal(usage_ls, sizeof(usage_ls) - 1);
+        return;
+    }
+    if (starts_with(line, "cat ")) {
+        const char *path = skip_spaces(line + 4);
+        if (path[0] == '\0') {
+            write_literal(usage_cat, sizeof(usage_cat) - 1);
+            return;
+        }
+        cmd_cat(path, buffer, buffer_len);
+        return;
+    }
+
+    write_literal(unknown, sizeof(unknown) - 1);
+}
+
+__attribute__((noreturn))
+static void run_interactive_shell(char *buffer, uint64_t buffer_len) {
+    static const char ready[] = "init.elf: interactive shell ready\n";
+    static const char prompt[] = "TangPingOS> ";
+    char line[SHELL_LINE_MAX];
+
+    write_literal(ready, sizeof(ready) - 1);
+    for (;;) {
+        write_literal(prompt, sizeof(prompt) - 1);
+        read_line(line, sizeof(line));
+        run_shell_command(line, buffer, buffer_len);
+    }
+}
+
 __attribute__((noreturn))
 void _start(void) {
     static const char pid_prefix[] = "init.elf: pid=";
@@ -284,8 +394,6 @@ void _start(void) {
     static const char heap_fail[] = "init.elf: sbrk failed\n";
     static const char shell_prefix[] = "init.elf: startup commands\n";
     static const char newline[] = "\n";
-    static const char before_sleep[] = "init.elf: sleep 50 ticks\n";
-    static const char after_sleep[] = "init.elf: woke and yielding\n";
 
     write_literal(pid_prefix, sizeof(pid_prefix) - 1);
     write_u64_decimal(sys_getpid());
@@ -310,12 +418,5 @@ void _start(void) {
     *(volatile uint64_t *)0 = 0x55;
 #endif
 
-    for (uint64_t i = 0; i < 3; i++) {
-        write_literal(before_sleep, sizeof(before_sleep) - 1);
-        sys_sleep_ticks(50);
-        write_literal(after_sleep, sizeof(after_sleep) - 1);
-        sys_yield();
-    }
-
-    sys_exit(7);
+    run_interactive_shell(heap, 256);
 }

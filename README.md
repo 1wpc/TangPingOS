@@ -36,6 +36,11 @@ Current kernel features:
 - A tiny non-interactive init command runner. `init.elf` now has builtin
   `ls`/`cat`-style command functions that exercise `getdents`, `open`, `read`,
   and `close`, giving later keyboard/TTY shell work a cleaner userland shape.
+- PS/2 keyboard input plumbing: IRQ1 translates simple scancodes into
+  characters, stores them in a kernel input buffer, and exposes them to user
+  mode through `read(0, ...)`.
+- Blocking stdin reads: if `read(0, ...)` has no available keyboard data, the
+  current user task sleeps until IRQ1 wakes it after the next keypress.
 - User pointer validation and safe copy helpers for syscall buffers. Syscalls
   now copy strings and I/O buffers through page-table-checked
   `copy_from_user`/`copy_to_user` helpers instead of blindly dereferencing
@@ -65,7 +70,7 @@ rax=7 read_file(path=rdi,
 rax=8 open(path=rdi)          -> rax=fd, or -1 if missing
 rax=9 read(fd=rdi,
            buf=rsi,
-           len=rdx)           -> rax=bytes read, 0 at EOF, or -1
+           len=rdx)           -> rax=bytes read, 0 if empty/EOF, or -1
 rax=10 close(fd=rdi)          -> rax=0, or -1
 rax=11 getdents(path=rdi,
                 index=rsi,

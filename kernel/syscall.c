@@ -1,4 +1,5 @@
 #include <console.h>
+#include <input.h>
 #include <scheduler.h>
 #include <stdint.h>
 #include <syscall.h>
@@ -16,6 +17,7 @@
 #define SYSCALL_READ 9
 #define SYSCALL_CLOSE 10
 #define SYSCALL_GETDENTS 11
+#define FD_STDIN 0
 #define SYSCALL_WRITE_CHUNK_SIZE 128
 #define SYSCALL_PATH_MAX 128
 #define SYSCALL_READ_CHUNK_SIZE 512
@@ -83,15 +85,26 @@ static uint64_t syscall_open(const char *path) {
     return (uint64_t)scheduler_open_current_file(kernel_path);
 }
 
-static uint64_t syscall_read(uint64_t fd, void *buffer, uint64_t len) {
+static uint64_t syscall_read(uint64_t fd, void *buffer, uint64_t len, int *would_block) {
     uint8_t kernel_buffer[SYSCALL_READ_CHUNK_SIZE];
     uint64_t to_read = min_u64(len, sizeof(kernel_buffer));
+
+    *would_block = 0;
 
     if (usercopy_validate_range(buffer, to_read, 1) != 0) {
         return (uint64_t)-1;
     }
 
-    uint64_t read = scheduler_read_current_file((int)fd, kernel_buffer, to_read);
+    uint64_t read;
+    if (fd == FD_STDIN) {
+        read = input_read((char *)kernel_buffer, to_read);
+        if (read == 0 && to_read > 0) {
+            *would_block = 1;
+            return 0;
+        }
+    } else {
+        read = scheduler_read_current_file((int)fd, kernel_buffer, to_read);
+    }
     if (read == (uint64_t)-1) {
         return read;
     }
@@ -171,7 +184,16 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
             frame->rax = syscall_open((const char *)frame->rdi);
             break;
         case SYSCALL_READ:
-            frame->rax = syscall_read(frame->rdi, (void *)frame->rsi, frame->rdx);
+            {
+                int would_block = 0;
+                uint64_t result = syscall_read(frame->rdi, (void *)frame->rsi, frame->rdx, &would_block);
+                if (would_block) {
+                    frame->rax = SYSCALL_READ;
+                    frame->rip -= 2;
+                    return scheduler_wait_current_for_input(frame);
+                }
+                frame->rax = result;
+            }
             break;
         case SYSCALL_CLOSE:
             frame->rax = syscall_close(frame->rdi);

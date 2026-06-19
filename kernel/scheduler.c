@@ -21,6 +21,7 @@
 enum task_state {
     TASK_RUNNABLE,
     TASK_SLEEPING,
+    TASK_WAITING_INPUT,
     TASK_STOPPED,
 };
 
@@ -98,6 +99,8 @@ static const char *task_state_name(enum task_state state) {
             return "runnable";
         case TASK_SLEEPING:
             return "sleeping";
+        case TASK_WAITING_INPUT:
+            return "waiting-input";
         case TASK_STOPPED:
             return "stopped";
         default:
@@ -400,6 +403,32 @@ struct interrupt_frame *scheduler_sleep_current(struct interrupt_frame *frame, u
     quantum_ticks = 0;
     struct task *next = next_runnable_task();
     return switch_to_task(next, "sleep to");
+}
+
+struct interrupt_frame *scheduler_wait_current_for_input(struct interrupt_frame *frame) {
+    if (current_task == NULL || current_task == &boot_task) {
+        return frame;
+    }
+
+    current_task->frame = frame;
+    current_task->state = TASK_WAITING_INPUT;
+    console_printf("task waiting for input: pid=%u name=%s\n",
+                   current_task->pid, current_task->name);
+
+    quantum_ticks = 0;
+    struct task *next = next_runnable_task();
+    return switch_to_task(next, "input-wait to");
+}
+
+void scheduler_wake_input_waiters(void) {
+    for (uint64_t i = 0; i < task_count; i++) {
+        struct task *task = &tasks[i];
+        if (task->state == TASK_WAITING_INPUT) {
+            task->state = TASK_RUNNABLE;
+            console_printf("task input ready: pid=%u name=%s\n",
+                           task->pid, task->name);
+        }
+    }
 }
 
 uint64_t scheduler_current_pid(void) {

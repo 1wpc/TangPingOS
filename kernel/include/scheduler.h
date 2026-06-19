@@ -16,6 +16,8 @@ struct interrupt_frame *scheduler_exit_current(struct interrupt_frame *frame, ui
 struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, uint64_t vector, uint64_t fault_addr);
 struct interrupt_frame *scheduler_yield_current(struct interrupt_frame *frame);
 struct interrupt_frame *scheduler_sleep_current(struct interrupt_frame *frame, uint64_t ticks);
+struct interrupt_frame *scheduler_wait_current_for_input(struct interrupt_frame *frame);
+void scheduler_wake_input_waiters(void);
 uint64_t scheduler_current_pid(void);
 uint64_t scheduler_ticks(void);
 uint64_t scheduler_current_brk(void);
