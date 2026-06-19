@@ -1,5 +1,5 @@
-#ifndef VOIDOS_SCHEDULER_H
-#define VOIDOS_SCHEDULER_H
+#ifndef TANGPINGOS_SCHEDULER_H
+#define TANGPINGOS_SCHEDULER_H
 
 #include <stdint.h>
 #include <x86_64/interrupt_frame.h>

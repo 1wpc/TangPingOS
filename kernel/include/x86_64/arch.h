@@ -1,5 +1,5 @@
-#ifndef VOIDOS_X86_64_ARCH_H
-#define VOIDOS_X86_64_ARCH_H
+#ifndef TANGPINGOS_X86_64_ARCH_H
+#define TANGPINGOS_X86_64_ARCH_H
 
 #include <stdint.h>
 

@@ -1,5 +1,5 @@
-#ifndef VOIDOS_SYSCALL_H
-#define VOIDOS_SYSCALL_H
+#ifndef TANGPINGOS_SYSCALL_H
+#define TANGPINGOS_SYSCALL_H
 
 #include <x86_64/interrupt_frame.h>
 

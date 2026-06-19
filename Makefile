@@ -3,7 +3,7 @@ BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
 KERNEL := $(BUILD_DIR)/kernel.elf
 INIT := $(BUILD_DIR)/init.elf
-ISO := $(BUILD_DIR)/voidOS.iso
+ISO := $(BUILD_DIR)/TangPingOS.iso
 
 BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
 LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
@@ -127,11 +127,11 @@ run: iso check-uefi
 
 test-exception:
 	$(MAKE) clean
-	$(MAKE) iso EXTRA_CFLAGS=-DVOIDOS_TEST_EXCEPTION
+	$(MAKE) iso EXTRA_CFLAGS=-DTANGPINGOS_TEST_EXCEPTION
 
 test-page-fault:
 	$(MAKE) clean
-	$(MAKE) iso EXTRA_CFLAGS=-DVOIDOS_TEST_PAGE_FAULT
+	$(MAKE) iso EXTRA_CFLAGS=-DTANGPINGOS_TEST_PAGE_FAULT
 
 $(KERNEL): $(KERNEL_OBJECTS) linker/kernel.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJECTS) -o $@

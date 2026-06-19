@@ -1,6 +1,6 @@
-# voidOS
+# TangPingOS
 
-voidOS is a tiny x86_64 operating system project booted through UEFI with
+TangPingOS is a tiny x86_64 operating system project booted through UEFI with
 Limine. The v0 target is intentionally small: build a freestanding kernel,
 boot it in QEMU, print framebuffer and memory-map information, and halt.
 
@@ -70,7 +70,7 @@ Build outputs:
 ```text
 build/kernel.elf
 build/init.elf
-build/voidOS.iso
+build/TangPingOS.iso
 ```
 
 `init.elf` is not loaded from a kernel filesystem yet. Limine reads it from the

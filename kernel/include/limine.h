@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: 0BSD */
 /*
- * Minimal Limine protocol definitions used by voidOS v0.
+ * Minimal Limine protocol definitions used by TangPingOS v0.
  * Derived from the official Limine protocol header.
  */
 
-#ifndef VOIDOS_LIMINE_H
-#define VOIDOS_LIMINE_H
+#ifndef TANGPINGOS_LIMINE_H
+#define TANGPINGOS_LIMINE_H
 
 #include <stdint.h>
 

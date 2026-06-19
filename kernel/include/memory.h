@@ -1,5 +1,5 @@
-#ifndef VOIDOS_MEMORY_H
-#define VOIDOS_MEMORY_H
+#ifndef TANGPINGOS_MEMORY_H
+#define TANGPINGOS_MEMORY_H
 
 #include <limine.h>
 #include <stddef.h>

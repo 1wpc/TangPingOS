@@ -357,7 +357,7 @@ static void demo_task_b(void *arg) {
 
 void _start(void) {
     serial_init();
-    serial_write("voidOS serial online\n");
+    serial_write("TangPingOS serial online\n");
 
     if (!LIMINE_BASE_REVISION_SUPPORTED(base_revision)) {
         kernel_halt();
@@ -371,7 +371,7 @@ void _start(void) {
     fb = framebuffer_request.response->framebuffers[0];
     fb_clear();
 
-    console_write("voidOS booted\n");
+    console_write("TangPingOS booted\n");
     console_write("UEFI framebuffer OK\n");
     console_write("framebuffer: ");
     console_write_u64(fb->width);
@@ -421,12 +421,12 @@ void _start(void) {
     scheduler_dump_tasks();
     x86_64_interrupts_enable();
 
-#ifdef VOIDOS_TEST_EXCEPTION
+#ifdef TANGPINGOS_TEST_EXCEPTION
     console_write("triggering test exception: invalid opcode\n");
     __asm__ volatile ("ud2");
 #endif
 
-#ifdef VOIDOS_TEST_PAGE_FAULT
+#ifdef TANGPINGOS_TEST_PAGE_FAULT
     console_write("triggering test page fault\n");
     *(volatile uint64_t *)0xffff8000dead0000ULL = 0x55;
 #endif

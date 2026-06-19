@@ -1,5 +1,5 @@
-#ifndef VOIDOS_CONSOLE_H
-#define VOIDOS_CONSOLE_H
+#ifndef TANGPINGOS_CONSOLE_H
+#define TANGPINGOS_CONSOLE_H
 
 #include <stdint.h>
 
