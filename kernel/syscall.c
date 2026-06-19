@@ -12,6 +12,10 @@
 #define SYSCALL_SLEEP_TICKS 5
 #define SYSCALL_BRK 6
 #define SYSCALL_READ_FILE 7
+#define SYSCALL_OPEN 8
+#define SYSCALL_READ 9
+#define SYSCALL_CLOSE 10
+#define SYSCALL_GETDENTS 11
 #define SYSCALL_WRITE_CHUNK_SIZE 128
 #define SYSCALL_PATH_MAX 128
 #define SYSCALL_READ_CHUNK_SIZE 512
@@ -69,6 +73,66 @@ static uint64_t syscall_read_file(const char *path, uint64_t offset, void *buffe
     return read;
 }
 
+static uint64_t syscall_open(const char *path) {
+    char kernel_path[SYSCALL_PATH_MAX];
+
+    if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return (uint64_t)scheduler_open_current_file(kernel_path);
+}
+
+static uint64_t syscall_read(uint64_t fd, void *buffer, uint64_t len) {
+    uint8_t kernel_buffer[SYSCALL_READ_CHUNK_SIZE];
+    uint64_t to_read = min_u64(len, sizeof(kernel_buffer));
+
+    if (usercopy_validate_range(buffer, to_read, 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    uint64_t read = scheduler_read_current_file((int)fd, kernel_buffer, to_read);
+    if (read == (uint64_t)-1) {
+        return read;
+    }
+
+    if (copy_to_user(buffer, kernel_buffer, read) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return read;
+}
+
+static uint64_t syscall_close(uint64_t fd) {
+    return scheduler_close_current_file((int)fd) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t syscall_getdents(const char *path, uint64_t index, void *buffer, uint64_t len) {
+    char kernel_path[SYSCALL_PATH_MAX];
+    struct vfs_dirent dirent;
+
+    if (len < sizeof(dirent)) {
+        return (uint64_t)-1;
+    }
+    if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
+        return (uint64_t)-1;
+    }
+    if (usercopy_validate_range(buffer, sizeof(dirent), 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    int result = vfs_list_dir(kernel_path, index, &dirent);
+    if (result <= 0) {
+        return result == 0 ? 0 : (uint64_t)-1;
+    }
+
+    if (copy_to_user(buffer, &dirent, sizeof(dirent)) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return 1;
+}
+
 struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
     static int reported_user_entry;
 
@@ -97,6 +161,23 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYSCALL_READ_FILE:
             frame->rax = syscall_read_file(
+                (const char *)frame->rdi,
+                frame->rsi,
+                (void *)frame->rdx,
+                frame->rcx
+            );
+            break;
+        case SYSCALL_OPEN:
+            frame->rax = syscall_open((const char *)frame->rdi);
+            break;
+        case SYSCALL_READ:
+            frame->rax = syscall_read(frame->rdi, (void *)frame->rsi, frame->rdx);
+            break;
+        case SYSCALL_CLOSE:
+            frame->rax = syscall_close(frame->rdi);
+            break;
+        case SYSCALL_GETDENTS:
+            frame->rax = syscall_getdents(
                 (const char *)frame->rdi,
                 frame->rsi,
                 (void *)frame->rdx,

@@ -44,6 +44,7 @@ static uint64_t initrd_read_file(
     uint64_t buffer_len,
     void *context
 );
+static int initrd_list_dir(const char *path, uint64_t index, struct vfs_dirent *out, void *context);
 
 static int chars_equal(const char *a, const char *b) {
     uint64_t i = 0;
@@ -148,6 +149,27 @@ static void copy_user_path(char *dst, const char *path) {
     dst[i] = '\0';
 }
 
+static void copy_dirent_name(char *dst, const char *src) {
+    uint64_t i = 0;
+
+    while (i + 1 < VFS_DIRENT_NAME_MAX && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static int is_root_path(const char *path) {
+    const char *normalized;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    normalized = normalize_path(path);
+    return normalized[0] == '\0' || (normalized[0] == '.' && normalized[1] == '\0');
+}
+
 static struct limine_file *find_initrd_module(struct limine_module_response *modules) {
     if (modules == NULL) {
         return NULL;
@@ -203,7 +225,7 @@ void initrd_init(struct limine_module_response *modules) {
         cursor += record_size;
     }
 
-    if (file_count > 0 && vfs_register_readonly_fs("initrd", initrd_read_file, NULL) != 0) {
+    if (file_count > 0 && vfs_register_readonly_fs("initrd", initrd_read_file, initrd_list_dir, NULL) != 0) {
         console_write("initrd: failed to register VFS backend\n");
     }
 }
@@ -245,4 +267,21 @@ static uint64_t initrd_read_file(
     }
 
     return (uint64_t)-1;
+}
+
+static int initrd_list_dir(const char *path, uint64_t index, struct vfs_dirent *out, void *context) {
+    (void)context;
+
+    if (!is_root_path(path) || out == NULL) {
+        return -1;
+    }
+
+    if (index >= file_count) {
+        return 0;
+    }
+
+    copy_dirent_name(out->name, files[index].name);
+    out->type = VFS_DIRENT_TYPE_FILE;
+    out->size = files[index].size;
+    return 1;
 }

@@ -11,7 +11,7 @@ Current kernel features:
 - Framebuffer and serial console output.
 - GDT, IDT, CPU exception reporting, PIC, PIT timer IRQ, and keyboard IRQ.
 - Limine HHDM support, bitmap physical page allocation, current page-table
-  mapping, page-fault CR2 reporting, and a simple bump-style kernel heap.
+  mapping, page-fault CR2 reporting, and a simple reusable kernel heap.
 - Preemptive kernel tasks with PIT-driven round-robin scheduling.
 - Ring 3 user-mode demo task with TSS-backed kernel entry and `int 0x80`
   syscall dispatch.
@@ -28,10 +28,23 @@ Current kernel features:
 - A thin readonly VFS dispatch layer. The syscall layer talks to VFS, while
   initrd registers itself as the first filesystem backend. Future disk-backed
   filesystems can plug into the same path.
+- Per-process file descriptor table for user tasks. User mode can now
+  `open()`, `read()`, and `close()` readonly files through fd values while VFS
+  still uses initrd as the first backend.
+- Root directory enumeration through a minimal `getdents()` syscall, so user
+  mode can discover initrd files instead of knowing every filename upfront.
 - User pointer validation and safe copy helpers for syscall buffers. Syscalls
   now copy strings and I/O buffers through page-table-checked
   `copy_from_user`/`copy_to_user` helpers instead of blindly dereferencing
   user-provided addresses.
+- User address-space cleanup on process exit or user-mode fault. TangPingOS now
+  switches away from the dying process before freeing its user pages and lower
+  half page tables. Kernel stacks are queued for delayed reclaim so the kernel
+  never frees the stack that the current interrupt handler is still executing
+  on.
+- Reusable kernel heap blocks. `kfree()` now marks blocks free and coalesces
+  adjacent free blocks, so freed kernel allocations can be reused instead of
+  permanently advancing the bump pointer.
 
 Current user syscalls:
 
@@ -46,6 +59,15 @@ rax=7 read_file(path=rdi,
                 offset=rsi,
                 buf=rdx,
                 len=rcx)      -> rax=bytes read, or -1 if missing
+rax=8 open(path=rdi)          -> rax=fd, or -1 if missing
+rax=9 read(fd=rdi,
+           buf=rsi,
+           len=rdx)           -> rax=bytes read, 0 at EOF, or -1
+rax=10 close(fd=rdi)          -> rax=0, or -1
+rax=11 getdents(path=rdi,
+                index=rsi,
+                dirent=rdx,
+                len=rcx)      -> rax=1 entry, 0 EOF, or -1
 ```
 
 ## Requirements
@@ -95,6 +117,7 @@ build/TangPingOS.iso
 ```
 
 `init.elf` and `initrd.tar` are still loaded by Limine, not by a TangPingOS disk
-driver. The important step is that user mode now asks VFS for a file by path.
-Right now VFS forwards that request to the in-memory initrd backend. Later it
-can forward the same API to a real disk filesystem.
+driver. The important step is that user mode now opens a path into a per-process
+file descriptor, then reads through that fd. Right now VFS forwards those reads
+to the in-memory initrd backend. Later it can forward the same API to a real
+disk filesystem.

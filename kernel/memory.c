@@ -19,6 +19,8 @@
 
 #define HEAP_BASE 0xffffffff90000000ULL
 #define HEAP_SIZE (16ULL * 1024ULL * 1024ULL)
+#define HEAP_ALIGN 16ULL
+#define HEAP_MAGIC 0x54484541504d454dULL
 
 static uint64_t pmm_bitmap[BITMAP_WORDS];
 static uint64_t pmm_max_page_index;
@@ -29,6 +31,17 @@ static uint64_t hhdm_base;
 static uint64_t kernel_cr3;
 static uint64_t heap_next = HEAP_BASE;
 static uint64_t heap_mapped_end = HEAP_BASE;
+
+struct heap_block {
+    uint64_t size;
+    int free;
+    uint64_t magic;
+    struct heap_block *prev;
+    struct heap_block *next;
+};
+
+static struct heap_block *heap_head;
+static struct heap_block *heap_tail;
 
 static uint64_t align_up(uint64_t value, uint64_t align) {
     return (value + align - 1) & ~(align - 1);
@@ -44,6 +57,10 @@ static void *memset_local(void *ptr, int value, size_t size) {
         bytes[i] = (uint8_t)value;
     }
     return ptr;
+}
+
+static uint64_t heap_header_size(void) {
+    return align_up(sizeof(struct heap_block), HEAP_ALIGN);
 }
 
 static int pmm_test_bit(uint64_t page) {
@@ -210,6 +227,90 @@ int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, ui
     return -1;
 }
 
+static uint64_t vmm_free_pt(uint64_t pt_phys) {
+    uint64_t freed = 0;
+    uint64_t *pt = phys_to_virt(pt_phys & PTE_ADDR_MASK);
+
+    for (uint64_t i = 0; i < 512; i++) {
+        uint64_t entry = pt[i];
+        if ((entry & PTE_PRESENT) == 0) {
+            continue;
+        }
+
+        pmm_free_page(entry & PTE_ADDR_MASK);
+        pt[i] = 0;
+        freed++;
+    }
+
+    pmm_free_page(pt_phys & PTE_ADDR_MASK);
+    return freed + 1;
+}
+
+static uint64_t vmm_free_pd(uint64_t pd_phys) {
+    uint64_t freed = 0;
+    uint64_t *pd = phys_to_virt(pd_phys & PTE_ADDR_MASK);
+
+    for (uint64_t i = 0; i < 512; i++) {
+        uint64_t entry = pd[i];
+        if ((entry & PTE_PRESENT) == 0) {
+            continue;
+        }
+        if ((entry & PTE_HUGE) != 0) {
+            kernel_panic("cannot free huge user PD mapping");
+        }
+
+        freed += vmm_free_pt(entry & PTE_ADDR_MASK);
+        pd[i] = 0;
+    }
+
+    pmm_free_page(pd_phys & PTE_ADDR_MASK);
+    return freed + 1;
+}
+
+static uint64_t vmm_free_pdpt(uint64_t pdpt_phys) {
+    uint64_t freed = 0;
+    uint64_t *pdpt = phys_to_virt(pdpt_phys & PTE_ADDR_MASK);
+
+    for (uint64_t i = 0; i < 512; i++) {
+        uint64_t entry = pdpt[i];
+        if ((entry & PTE_PRESENT) == 0) {
+            continue;
+        }
+        if ((entry & PTE_HUGE) != 0) {
+            kernel_panic("cannot free huge user PDPT mapping");
+        }
+
+        freed += vmm_free_pd(entry & PTE_ADDR_MASK);
+        pdpt[i] = 0;
+    }
+
+    pmm_free_page(pdpt_phys & PTE_ADDR_MASK);
+    return freed + 1;
+}
+
+uint64_t vmm_destroy_user_address_space(uint64_t cr3_phys) {
+    cr3_phys &= PTE_ADDR_MASK;
+    if (cr3_phys == 0 || cr3_phys == kernel_cr3 || cr3_phys == (read_cr3() & PTE_ADDR_MASK)) {
+        return 0;
+    }
+
+    uint64_t freed = 0;
+    uint64_t *pml4 = phys_to_virt(cr3_phys);
+
+    for (uint64_t i = 0; i < 256; i++) {
+        uint64_t entry = pml4[i];
+        if ((entry & PTE_PRESENT) == 0) {
+            continue;
+        }
+
+        freed += vmm_free_pdpt(entry & PTE_ADDR_MASK);
+        pml4[i] = 0;
+    }
+
+    pmm_free_page(cr3_phys);
+    return freed + 1;
+}
+
 uint64_t vmm_create_address_space(void) {
     uint64_t cr3_phys = pmm_alloc_page();
     uint64_t *new_pml4 = phys_to_virt(cr3_phys);
@@ -243,18 +344,7 @@ void vmm_switch_address_space(uint64_t cr3_phys) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3_phys) : "memory");
 }
 
-void *kmalloc(size_t size) {
-    if (size == 0) {
-        return NULL;
-    }
-
-    uint64_t start = align_up(heap_next, 16);
-    uint64_t end = align_up(start + size, 16);
-
-    if (end > HEAP_BASE + HEAP_SIZE) {
-        kernel_panic("kernel heap exhausted");
-    }
-
+static void heap_ensure_mapped(uint64_t end) {
     while (heap_mapped_end < end) {
         uint64_t phys = pmm_alloc_page();
         if (vmm_map_page(heap_mapped_end, phys, PTE_WRITABLE | PTE_NO_EXEC) != 0) {
@@ -262,9 +352,98 @@ void *kmalloc(size_t size) {
         }
         heap_mapped_end += PAGE_SIZE;
     }
+}
+
+static void heap_split_block(struct heap_block *block, uint64_t size) {
+    uint64_t header_size = heap_header_size();
+
+    if (block->size < size + header_size + HEAP_ALIGN) {
+        return;
+    }
+
+    struct heap_block *split = (struct heap_block *)((uint8_t *)block + header_size + size);
+    split->size = block->size - size - header_size;
+    split->free = 1;
+    split->magic = HEAP_MAGIC;
+    split->prev = block;
+    split->next = block->next;
+
+    if (split->next != NULL) {
+        split->next->prev = split;
+    } else {
+        heap_tail = split;
+    }
+
+    block->size = size;
+    block->next = split;
+}
+
+static void heap_coalesce(struct heap_block *block) {
+    uint64_t header_size = heap_header_size();
+
+    if (block->next != NULL && block->next->free) {
+        struct heap_block *next = block->next;
+        block->size += header_size + next->size;
+        block->next = next->next;
+        if (block->next != NULL) {
+            block->next->prev = block;
+        } else {
+            heap_tail = block;
+        }
+    }
+
+    if (block->prev != NULL && block->prev->free) {
+        struct heap_block *prev = block->prev;
+        prev->size += header_size + block->size;
+        prev->next = block->next;
+        if (prev->next != NULL) {
+            prev->next->prev = prev;
+        } else {
+            heap_tail = prev;
+        }
+    }
+}
+
+void *kmalloc(size_t size) {
+    if (size == 0) {
+        return NULL;
+    }
+
+    uint64_t alloc_size = align_up(size, HEAP_ALIGN);
+    uint64_t header_size = heap_header_size();
+
+    for (struct heap_block *block = heap_head; block != NULL; block = block->next) {
+        if (block->free && block->size >= alloc_size) {
+            heap_split_block(block, alloc_size);
+            block->free = 0;
+            return (uint8_t *)block + header_size;
+        }
+    }
+
+    uint64_t start = align_up(heap_next, HEAP_ALIGN);
+    uint64_t end = align_up(start + header_size + alloc_size, HEAP_ALIGN);
+    if (end > HEAP_BASE + HEAP_SIZE) {
+        kernel_panic("kernel heap exhausted");
+    }
+
+    heap_ensure_mapped(end);
+
+    struct heap_block *block = (struct heap_block *)start;
+    block->size = alloc_size;
+    block->free = 0;
+    block->magic = HEAP_MAGIC;
+    block->prev = heap_tail;
+    block->next = NULL;
+
+    if (heap_tail != NULL) {
+        heap_tail->next = block;
+    } else {
+        heap_head = block;
+    }
+    heap_tail = block;
 
     heap_next = end;
-    return (void *)start;
+    return (uint8_t *)block + header_size;
 }
 
 void *kzalloc(size_t size) {
@@ -274,7 +453,18 @@ void *kzalloc(size_t size) {
 }
 
 void kfree(void *ptr) {
-    (void)ptr;
+    if (ptr == NULL) {
+        return;
+    }
+
+    uint64_t header_size = heap_header_size();
+    struct heap_block *block = (struct heap_block *)((uint8_t *)ptr - header_size);
+    if (block->magic != HEAP_MAGIC || block->free) {
+        kernel_panic("invalid kernel heap free");
+    }
+
+    block->free = 1;
+    heap_coalesce(block);
 }
 
 void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
@@ -352,6 +542,15 @@ void memory_self_test(void) {
         heap_block[15] != 0x123456789abcdef0ULL) {
         kernel_panic("heap self-test failed");
     }
+    kfree(heap_block);
+
+    void *reuse_a = kmalloc(64);
+    kfree(reuse_a);
+    void *reuse_b = kmalloc(64);
+    if (reuse_a != reuse_b) {
+        kernel_panic("heap reuse self-test failed");
+    }
+    kfree(reuse_b);
 
     console_printf("memory self-test OK: free pages %u -> %u\n",
                    before, pmm_free_pages());

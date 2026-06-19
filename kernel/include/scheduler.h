@@ -20,6 +20,9 @@ uint64_t scheduler_current_pid(void);
 uint64_t scheduler_ticks(void);
 uint64_t scheduler_current_brk(void);
 uint64_t scheduler_set_current_brk(uint64_t new_break);
+int scheduler_open_current_file(const char *path);
+uint64_t scheduler_read_current_file(int fd, void *buffer, uint64_t len);
+int scheduler_close_current_file(int fd);
 void scheduler_dump_tasks(void);
 
 #endif

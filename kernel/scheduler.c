@@ -3,6 +3,7 @@
 #include <scheduler.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <vfs.h>
 #include <x86_64/arch.h>
 
 #define MAX_TASKS 8
@@ -12,11 +13,21 @@
 #define KERNEL_DATA_SELECTOR 0x10
 #define USER_CODE_SELECTOR 0x1b
 #define USER_DATA_SELECTOR 0x23
+#define MAX_PENDING_STACK_FREE 8
+#define TASK_MAX_FILES 8
+#define TASK_FIRST_FILE_FD 3
+#define TASK_PATH_MAX 128
 
 enum task_state {
     TASK_RUNNABLE,
     TASK_SLEEPING,
     TASK_STOPPED,
+};
+
+struct task_file {
+    int in_use;
+    char path[TASK_PATH_MAX];
+    uint64_t offset;
 };
 
 struct task {
@@ -34,6 +45,8 @@ struct task {
     uint64_t wake_tick;
     uint64_t exit_status;
     uint64_t switches;
+    int resources_released;
+    struct task_file files[TASK_MAX_FILES];
 };
 
 static struct task tasks[MAX_TASKS];
@@ -45,6 +58,8 @@ static uint64_t quantum_ticks;
 static uint64_t scheduler_tick_count;
 static uint64_t next_pid = 1;
 static int scheduler_ready;
+static void *pending_stack_free[MAX_PENDING_STACK_FREE];
+static uint64_t pending_stack_free_count;
 
 static uint64_t align_down(uint64_t value, uint64_t align) {
     return value & ~(align - 1);
@@ -60,6 +75,21 @@ static void *memset_local(void *ptr, int value, uint64_t size) {
         bytes[i] = (uint8_t)value;
     }
     return ptr;
+}
+
+static void copy_file_path(char *dst, const char *src) {
+    uint64_t i = 0;
+
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+
+    while (i + 1 < TASK_PATH_MAX && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
 }
 
 static const char *task_state_name(enum task_state state) {
@@ -95,6 +125,7 @@ void scheduler_init(void) {
     quantum_ticks = 0;
     scheduler_tick_count = 0;
     current_task = NULL;
+    pending_stack_free_count = 0;
     scheduler_ready = 1;
     console_write("scheduler initialized\n");
 }
@@ -234,6 +265,48 @@ static struct interrupt_frame *switch_to_task(struct task *next, const char *rea
     return current_task->frame;
 }
 
+static void release_task_resources(struct task *task) {
+    if (task == NULL || task == &boot_task || task->resources_released) {
+        return;
+    }
+    if (task->cr3 == 0 || task->cr3 == vmm_kernel_address_space()) {
+        task->resources_released = 1;
+        return;
+    }
+
+    for (uint64_t i = 0; i < TASK_MAX_FILES; i++) {
+        task->files[i].in_use = 0;
+        task->files[i].offset = 0;
+        task->files[i].path[0] = '\0';
+    }
+
+    uint64_t before = pmm_free_pages();
+    uint64_t released = vmm_destroy_user_address_space(task->cr3);
+    uint64_t after = pmm_free_pages();
+    task->cr3 = vmm_kernel_address_space();
+    task->resources_released = 1;
+    console_printf("task resources released: pid=%u pages=%u free=%u->%u\n",
+                   task->pid, released, before, after);
+
+    if (task->stack != NULL) {
+        if (pending_stack_free_count >= MAX_PENDING_STACK_FREE) {
+            kernel_panic("pending stack free queue full");
+        }
+        pending_stack_free[pending_stack_free_count++] = task->stack;
+        task->stack = NULL;
+        task->kernel_stack_top = 0;
+        task->frame = NULL;
+    }
+}
+
+static void reclaim_pending_stacks(void) {
+    while (pending_stack_free_count > 0) {
+        void *stack = pending_stack_free[--pending_stack_free_count];
+        kfree(stack);
+        console_printf("kernel stack reclaimed: %x\n", (uint64_t)stack);
+    }
+}
+
 struct interrupt_frame *scheduler_on_timer_tick(struct interrupt_frame *frame) {
     if (!scheduler_ready || task_count == 0) {
         return frame;
@@ -241,6 +314,7 @@ struct interrupt_frame *scheduler_on_timer_tick(struct interrupt_frame *frame) {
 
     ensure_boot_task(frame);
     scheduler_tick_count++;
+    reclaim_pending_stacks();
     wake_sleeping_tasks();
 
     if (current_task != NULL) {
@@ -270,8 +344,11 @@ struct interrupt_frame *scheduler_exit_current(struct interrupt_frame *frame, ui
                    current_task->pid, current_task->name, status);
 
     quantum_ticks = 0;
+    struct task *finished = current_task;
     struct task *next = next_runnable_task();
-    return switch_to_task(next, "exit to");
+    struct interrupt_frame *next_frame = switch_to_task(next, "exit to");
+    release_task_resources(finished);
+    return next_frame;
 }
 
 struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, uint64_t vector, uint64_t fault_addr) {
@@ -287,8 +364,11 @@ struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, u
                    current_task->exit_status);
 
     quantum_ticks = 0;
+    struct task *faulted = current_task;
     struct task *next = next_runnable_task();
-    return switch_to_task(next, "fault to");
+    struct interrupt_frame *next_frame = switch_to_task(next, "fault to");
+    release_task_resources(faulted);
+    return next_frame;
 }
 
 struct interrupt_frame *scheduler_yield_current(struct interrupt_frame *frame) {
@@ -376,6 +456,78 @@ uint64_t scheduler_set_current_brk(uint64_t new_break) {
 
     current_task->brk_current = new_break;
     return current_task->brk_current;
+}
+
+int scheduler_open_current_file(const char *path) {
+    if (current_task == NULL || current_task == &boot_task || path == NULL) {
+        return -1;
+    }
+
+    if (!vfs_file_exists(path)) {
+        return -1;
+    }
+
+    for (uint64_t i = 0; i < TASK_MAX_FILES; i++) {
+        struct task_file *file = &current_task->files[i];
+        if (file->in_use) {
+            continue;
+        }
+
+        file->in_use = 1;
+        file->offset = 0;
+        copy_file_path(file->path, path);
+
+        int fd = (int)(i + TASK_FIRST_FILE_FD);
+        console_printf("fd opened: pid=%u fd=%u path=%s\n",
+                       current_task->pid, (uint64_t)fd, file->path);
+        return fd;
+    }
+
+    return -1;
+}
+
+uint64_t scheduler_read_current_file(int fd, void *buffer, uint64_t len) {
+    if (current_task == NULL || current_task == &boot_task || buffer == NULL) {
+        return (uint64_t)-1;
+    }
+
+    if (fd < TASK_FIRST_FILE_FD || fd >= TASK_FIRST_FILE_FD + TASK_MAX_FILES) {
+        return (uint64_t)-1;
+    }
+
+    struct task_file *file = &current_task->files[fd - TASK_FIRST_FILE_FD];
+    if (!file->in_use) {
+        return (uint64_t)-1;
+    }
+
+    uint64_t read = vfs_read_file(file->path, file->offset, buffer, len);
+    if (read != (uint64_t)-1) {
+        file->offset += read;
+    }
+
+    return read;
+}
+
+int scheduler_close_current_file(int fd) {
+    if (current_task == NULL || current_task == &boot_task) {
+        return -1;
+    }
+
+    if (fd < TASK_FIRST_FILE_FD || fd >= TASK_FIRST_FILE_FD + TASK_MAX_FILES) {
+        return -1;
+    }
+
+    struct task_file *file = &current_task->files[fd - TASK_FIRST_FILE_FD];
+    if (!file->in_use) {
+        return -1;
+    }
+
+    console_printf("fd closed: pid=%u fd=%u path=%s\n",
+                   current_task->pid, (uint64_t)fd, file->path);
+    file->in_use = 0;
+    file->offset = 0;
+    file->path[0] = '\0';
+    return 0;
 }
 
 void scheduler_dump_tasks(void) {
