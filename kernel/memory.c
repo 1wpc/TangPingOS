@@ -12,8 +12,10 @@
 #define PTE_PRESENT  (1ULL << 0)
 #define PTE_WRITABLE (1ULL << 1)
 #define PTE_USER     (1ULL << 2)
+#define PTE_HUGE     (1ULL << 7)
 #define PTE_NO_EXEC  (1ULL << 63)
 #define PTE_ADDR_MASK 0x000ffffffffff000ULL
+#define USER_VIRT_MAX 0x0000800000000000ULL
 
 #define HEAP_BASE 0xffffffff90000000ULL
 #define HEAP_SIZE (16ULL * 1024ULL * 1024ULL)
@@ -171,6 +173,41 @@ int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, u
 
 int vmm_map_page(uint64_t virt_addr, uint64_t phys_addr, uint64_t flags) {
     return vmm_map_page_in(read_cr3(), virt_addr, phys_addr, flags);
+}
+
+int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, uint64_t *phys_out) {
+    if (phys_out == NULL || virt_addr >= USER_VIRT_MAX) {
+        return -1;
+    }
+
+    uint64_t pml4_i = (virt_addr >> 39) & 0x1ff;
+    uint64_t pdpt_i = (virt_addr >> 30) & 0x1ff;
+    uint64_t pd_i = (virt_addr >> 21) & 0x1ff;
+    uint64_t pt_i = (virt_addr >> 12) & 0x1ff;
+    uint64_t indices[4] = {pml4_i, pdpt_i, pd_i, pt_i};
+
+    uint64_t *table = phys_to_virt(cr3_phys & PTE_ADDR_MASK);
+    for (uint64_t level = 0; level < 4; level++) {
+        uint64_t entry = table[indices[level]];
+        if ((entry & PTE_PRESENT) == 0 || (entry & PTE_USER) == 0) {
+            return -1;
+        }
+        if (write && (entry & PTE_WRITABLE) == 0) {
+            return -1;
+        }
+
+        if (level == 3) {
+            *phys_out = (entry & PTE_ADDR_MASK) | (virt_addr & (PAGE_SIZE - 1));
+            return 0;
+        }
+
+        if ((entry & PTE_HUGE) != 0) {
+            return -1;
+        }
+        table = phys_to_virt(entry & PTE_ADDR_MASK);
+    }
+
+    return -1;
 }
 
 uint64_t vmm_create_address_space(void) {

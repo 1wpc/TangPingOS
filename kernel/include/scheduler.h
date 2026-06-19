@@ -13,6 +13,7 @@ int scheduler_create_user_task(const char *name, uint64_t cr3_phys,
                                uint64_t brk_start, uint64_t brk_limit);
 struct interrupt_frame *scheduler_on_timer_tick(struct interrupt_frame *frame);
 struct interrupt_frame *scheduler_exit_current(struct interrupt_frame *frame, uint64_t status);
+struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, uint64_t vector, uint64_t fault_addr);
 struct interrupt_frame *scheduler_yield_current(struct interrupt_frame *frame);
 struct interrupt_frame *scheduler_sleep_current(struct interrupt_frame *frame, uint64_t ticks);
 uint64_t scheduler_current_pid(void);

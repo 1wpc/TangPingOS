@@ -1,4 +1,5 @@
 #include <console.h>
+#include <initrd.h>
 #include <limine.h>
 #include <memory.h>
 #include <scheduler.h>
@@ -7,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <user.h>
+#include <vfs.h>
 #include <x86_64/arch.h>
 #include <x86_64/io.h>
 
@@ -417,6 +419,8 @@ void _start(void) {
         scheduler_create_task("task-b", demo_task_b, NULL) != 0) {
         kernel_panic("failed to create demo tasks");
     }
+    vfs_init();
+    initrd_init(module_request.response);
     user_init_from_modules(module_request.response);
     scheduler_dump_tasks();
     x86_64_interrupts_enable();

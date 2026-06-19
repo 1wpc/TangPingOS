@@ -1,0 +1,2 @@
+TangPingOS message of the day:
+The filesystem is still an initrd tar archive today, but the read_file syscall is shaped like a real file API.

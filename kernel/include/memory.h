@@ -19,6 +19,7 @@ uint64_t pmm_total_pages(void);
 uint64_t pmm_free_pages(void);
 int vmm_map_page(uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
 int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
+int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, uint64_t *phys_out);
 uint64_t vmm_create_address_space(void);
 uint64_t vmm_current_address_space(void);
 uint64_t vmm_kernel_address_space(void);

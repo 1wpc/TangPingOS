@@ -267,15 +267,25 @@ static inline uint64_t read_cr2(void) {
     return value;
 }
 
+static int frame_from_user(const struct interrupt_frame *frame) {
+    return (frame->cs & 0x3) == 0x3;
+}
+
 struct interrupt_frame *x86_64_interrupt_handler(struct interrupt_frame *frame) {
     if (frame->vector < 32) {
+        uint64_t fault_addr = frame->vector == 14 ? read_cr2() : 0;
         console_printf("\nEXCEPTION %u: %s\n", frame->vector, exception_names[frame->vector]);
         if (frame->vector == 14) {
-            console_printf("cr2=%x\n", read_cr2());
+            console_printf("cr2=%x\n", fault_addr);
         }
         console_printf("error=%x rip=%x cs=%x rflags=%x rsp=%x ss=%x\n",
                        frame->error_code, frame->rip, frame->cs, frame->rflags,
                        frame->rsp, frame->ss);
+
+        if (frame_from_user(frame)) {
+            return scheduler_fault_current(frame, frame->vector, fault_addr);
+        }
+
         kernel_panic("unhandled CPU exception");
     }
 

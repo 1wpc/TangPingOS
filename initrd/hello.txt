@@ -1,0 +1,2 @@
+Hello from TangPingOS initrd.
+This file was packed into the ISO, loaded by Limine, parsed by the kernel, and read by init.elf.

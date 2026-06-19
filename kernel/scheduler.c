@@ -274,6 +274,23 @@ struct interrupt_frame *scheduler_exit_current(struct interrupt_frame *frame, ui
     return switch_to_task(next, "exit to");
 }
 
+struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, uint64_t vector, uint64_t fault_addr) {
+    if (current_task == NULL || current_task == &boot_task) {
+        kernel_panic("user fault without current user task");
+    }
+
+    current_task->frame = frame;
+    current_task->state = TASK_STOPPED;
+    current_task->exit_status = 128 + vector;
+    console_printf("task killed: pid=%u name=%s vector=%u fault=%x status=%u\n",
+                   current_task->pid, current_task->name, vector, fault_addr,
+                   current_task->exit_status);
+
+    quantum_ticks = 0;
+    struct task *next = next_runnable_task();
+    return switch_to_task(next, "fault to");
+}
+
 struct interrupt_frame *scheduler_yield_current(struct interrupt_frame *frame) {
     if (current_task == NULL || current_task == &boot_task) {
         return frame;
