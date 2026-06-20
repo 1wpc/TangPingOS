@@ -25,8 +25,10 @@ void log_printf(enum log_level level, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
 
+    console_set_screen_output_suppressed(1);
     console_write(log_prefix(level));
     console_vprintf(fmt, args);
+    console_set_screen_output_suppressed(0);
 
     va_end(args);
 }

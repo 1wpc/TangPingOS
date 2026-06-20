@@ -43,10 +43,6 @@ uint64_t tty_read(char *buffer, uint64_t len) {
 }
 
 uint64_t tty_write(const char *buffer, uint64_t len) {
-    for (uint64_t i = 0; i < len; i++) {
-        char c[2] = {buffer[i], '\0'};
-        console_write(c);
-    }
-
+    console_write_n(buffer, len);
     return len;
 }

@@ -32,3 +32,8 @@
 - 2026-06-20: 将启动链路拆分为 `kernel -> init.elf -> /bin/shell.elf`，交互 shell 现在作为独立用户程序从 initrd 启动。
 - 2026-06-20: 新增 `userspace/lib` 用户态公共库，集中 syscall wrapper、基础常量、字符串工具和文本/数字输出函数。
 - 2026-06-20: 新增独立用户程序 `/bin/ls.elf` 和 `/bin/cat.elf`，并将详细用户/开发说明拆分到 `docs/MANUAL.md`。
+- 2026-06-20: 优化真机启动显示，详细启动日志改为串口为主，framebuffer 在 shell ready 时清屏并显示交互提示符。
+- 2026-06-20: 优化 framebuffer 控制台底层绘制，清屏/填充改为直接批量写入，滚屏从逐字节复制改为 64-bit 块复制。
+- 2026-06-20: 配置 x86 PAT 并为 framebuffer 建立 write-combining 映射，提升真机上连续像素写入和滚屏性能。
+- 2026-06-20: 为 framebuffer 控制台加入字符缓冲和脏行刷新，TTY 输出改为批量写入，减少滚屏时的整屏像素搬运。
+- 2026-06-20: 将普通内核日志限制在串口输出，避免后台调试信息覆盖真机 framebuffer 上的交互界面。

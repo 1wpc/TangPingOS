@@ -13,7 +13,10 @@
 #define PTE_PRESENT  (1ULL << 0)
 #define PTE_WRITABLE (1ULL << 1)
 #define PTE_USER     (1ULL << 2)
+#define PTE_PWT      (1ULL << 3)
+#define PTE_PCD      (1ULL << 4)
 #define PTE_HUGE     (1ULL << 7)
+#define PTE_PAT_HUGE (1ULL << 12)
 #define PTE_NO_EXEC  (1ULL << 63)
 #define PTE_ADDR_MASK 0x000ffffffffff000ULL
 #define USER_VIRT_MAX 0x0000800000000000ULL
@@ -152,6 +155,30 @@ static inline void invlpg(uint64_t virt_addr) {
     __asm__ volatile ("invlpg (%0)" : : "r"(virt_addr) : "memory");
 }
 
+static inline uint64_t rdmsr(uint32_t msr) {
+    uint32_t low;
+    uint32_t high;
+    __asm__ volatile ("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return ((uint64_t)high << 32) | low;
+}
+
+static inline void wrmsr(uint32_t msr, uint64_t value) {
+    uint32_t low = (uint32_t)value;
+    uint32_t high = (uint32_t)(value >> 32);
+    __asm__ volatile ("wrmsr" : : "c"(msr), "a"(low), "d"(high) : "memory");
+}
+
+static void pat_enable_write_combining(void) {
+    const uint32_t ia32_pat = 0x277;
+    const uint64_t pat_type_wc = 0x01;
+    uint64_t pat = rdmsr(ia32_pat);
+
+    pat &= ~(0xffULL << 8);
+    pat |= pat_type_wc << 8;
+    wrmsr(ia32_pat, pat);
+    __asm__ volatile ("wbinvd" : : : "memory");
+}
+
 static uint64_t *vmm_next_level(uint64_t *table, uint64_t index, int create, uint64_t flags) {
     if ((table[index] & PTE_PRESENT) == 0) {
         if (!create) {
@@ -182,7 +209,14 @@ int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, u
     uint64_t *pd = vmm_next_level(pdpt, pdpt_i, 1, flags);
     uint64_t *pt = vmm_next_level(pd, pd_i, 1, flags);
 
-    pt[pt_i] = (phys_addr & PTE_ADDR_MASK) | flags | PTE_PRESENT;
+    uint64_t pte_flags = flags;
+    if ((pte_flags & VMM_FLAG_WRITE_COMBINING) != 0) {
+        pte_flags &= ~VMM_FLAG_WRITE_COMBINING;
+        pte_flags &= ~PTE_PCD;
+        pte_flags |= PTE_PWT;
+    }
+
+    pt[pt_i] = (phys_addr & PTE_ADDR_MASK) | pte_flags | PTE_PRESENT;
     if ((read_cr3() & PTE_ADDR_MASK) == (cr3_phys & PTE_ADDR_MASK)) {
         invlpg(virt_addr);
     }
@@ -191,6 +225,52 @@ int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, u
 
 int vmm_map_page(uint64_t virt_addr, uint64_t phys_addr, uint64_t flags) {
     return vmm_map_page_in(read_cr3(), virt_addr, phys_addr, flags);
+}
+
+int vmm_translate_kernel_addr(uint64_t virt_addr, uint64_t *phys_out) {
+    if (phys_out == NULL) {
+        return -1;
+    }
+
+    uint64_t pml4_i = (virt_addr >> 39) & 0x1ff;
+    uint64_t pdpt_i = (virt_addr >> 30) & 0x1ff;
+    uint64_t pd_i = (virt_addr >> 21) & 0x1ff;
+    uint64_t pt_i = (virt_addr >> 12) & 0x1ff;
+
+    uint64_t *pml4 = phys_to_virt((read_cr3() & PTE_ADDR_MASK));
+    uint64_t pml4e = pml4[pml4_i];
+    if ((pml4e & PTE_PRESENT) == 0) {
+        return -1;
+    }
+
+    uint64_t *pdpt = phys_to_virt(pml4e & PTE_ADDR_MASK);
+    uint64_t pdpte = pdpt[pdpt_i];
+    if ((pdpte & PTE_PRESENT) == 0) {
+        return -1;
+    }
+    if ((pdpte & PTE_HUGE) != 0) {
+        *phys_out = (pdpte & 0x000fffffc0000000ULL) | (virt_addr & 0x3fffffffULL);
+        return 0;
+    }
+
+    uint64_t *pd = phys_to_virt(pdpte & PTE_ADDR_MASK);
+    uint64_t pde = pd[pd_i];
+    if ((pde & PTE_PRESENT) == 0) {
+        return -1;
+    }
+    if ((pde & PTE_HUGE) != 0) {
+        *phys_out = (pde & 0x000fffffffe00000ULL) | (virt_addr & 0x1fffffULL);
+        return 0;
+    }
+
+    uint64_t *pt = phys_to_virt(pde & PTE_ADDR_MASK);
+    uint64_t pte = pt[pt_i];
+    if ((pte & PTE_PRESENT) == 0) {
+        return -1;
+    }
+
+    *phys_out = (pte & PTE_ADDR_MASK) | (virt_addr & (PAGE_SIZE - 1));
+    return 0;
 }
 
 int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, uint64_t *phys_out) {
@@ -471,6 +551,7 @@ void kfree(void *ptr) {
 void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
     hhdm_base = hhdm_offset;
     kernel_cr3 = read_cr3() & PTE_ADDR_MASK;
+    pat_enable_write_combining();
     pmm_free_page_count = 0;
     pmm_managed_page_count = 0;
     pmm_max_page_index = 0;
@@ -510,6 +591,7 @@ void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
 
     log_info("HHDM offset: %x\n", hhdm_base);
     log_info("kernel address space: cr3=%x\n", kernel_cr3);
+    log_info("PAT configured: PWT cache index uses write-combining\n");
     log_info("PMM initialized: managed pages %u free pages %u\n",
              pmm_managed_page_count, pmm_free_page_count);
 }

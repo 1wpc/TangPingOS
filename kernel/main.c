@@ -71,6 +71,8 @@ void _start(void) {
     console_write(" bpp ");
     console_write_u64(fb->bpp);
     console_write("\n");
+    console_write("Starting kernel and userland...\n");
+    console_set_framebuffer_enabled(0);
 
     if (memmap_request.response == NULL) {
         kernel_panic("no memory map from bootloader");
@@ -99,6 +101,7 @@ void _start(void) {
 
     sysinfo_init(fb, memmap_request.response);
     memory_init(memmap_request.response, hhdm_request.response->offset);
+    console_enable_framebuffer_write_combining();
     memory_self_test();
 
     x86_64_interrupts_init();

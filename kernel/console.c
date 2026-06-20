@@ -1,5 +1,6 @@
 #include <console.h>
 #include <limine.h>
+#include <memory.h>
 #include <stdbool.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -9,13 +10,26 @@
 #define COM1 0x3f8
 #define FB_CHAR_WIDTH 8
 #define FB_CHAR_HEIGHT 16
+#define FB_WC_BASE 0xffffffffa0000000ULL
+#define TEXT_MAX_COLS 512
+#define TEXT_MAX_ROWS 256
 
 static struct limine_framebuffer *fb;
 static uint32_t text_x;
 static uint32_t text_y;
+static uint32_t text_cols;
+static uint32_t text_rows;
 static uint32_t fg_color = 0x00e6edf3;
 static uint32_t bg_color = 0x000b1020;
 static int fb_cursor_visible;
+static int fb_output_enabled;
+static int screen_output_suppressed;
+static int fb_dirty_all;
+static char text_cells[TEXT_MAX_ROWS][TEXT_MAX_COLS];
+static uint8_t text_dirty[TEXT_MAX_ROWS];
+
+static void fb_show_cursor(void);
+static void fb_hide_cursor(void);
 
 static const uint8_t font8x8_basic[128][8] = {
     [' '] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
@@ -122,14 +136,32 @@ void kernel_halt(void) {
     }
 }
 
+static uint32_t min_u32(uint32_t a, uint32_t b) {
+    return a < b ? a : b;
+}
+
 static void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (fb == NULL || x >= fb->width || y >= fb->height) {
         return;
     }
 
-    volatile uint8_t *base = (volatile uint8_t *)fb->address;
-    volatile uint32_t *pixel = (volatile uint32_t *)(base + y * fb->pitch + x * 4);
+    uint8_t *base = (uint8_t *)fb->address;
+    uint32_t *pixel = (uint32_t *)(base + y * fb->pitch + x * 4);
     *pixel = color;
+}
+
+static void fb_fill_pixels(uint8_t *dst, uint64_t pixel_count, uint32_t color) {
+    uint64_t i = 0;
+    uint64_t packed = ((uint64_t)color << 32) | color;
+    uint64_t pairs = pixel_count / 2;
+    uint64_t *wide = (uint64_t *)dst;
+
+    for (; i < pairs; i++) {
+        wide[i] = packed;
+    }
+    if ((pixel_count & 1) != 0) {
+        ((uint32_t *)dst)[pixel_count - 1] = color;
+    }
 }
 
 static void fb_clear(void) {
@@ -137,19 +169,103 @@ static void fb_clear(void) {
         return;
     }
 
+    uint8_t *base = (uint8_t *)fb->address;
     for (uint64_t y = 0; y < fb->height; y++) {
-        for (uint64_t x = 0; x < fb->width; x++) {
-            fb_put_pixel((uint32_t)x, (uint32_t)y, bg_color);
-        }
+        fb_fill_pixels(base + y * fb->pitch, fb->width, bg_color);
     }
 }
 
+static void text_mark_row_dirty(uint32_t row) {
+    if (row < text_rows) {
+        text_dirty[row] = 1;
+    }
+}
+
+static void text_mark_all_dirty(void) {
+    for (uint32_t row = 0; row < text_rows; row++) {
+        text_dirty[row] = 1;
+    }
+    fb_dirty_all = 1;
+}
+
+static void text_clear_row(uint32_t row) {
+    if (row >= text_rows) {
+        return;
+    }
+    for (uint32_t col = 0; col < text_cols; col++) {
+        text_cells[row][col] = ' ';
+    }
+    text_mark_row_dirty(row);
+}
+
+static void text_clear(void) {
+    for (uint32_t row = 0; row < text_rows; row++) {
+        text_clear_row(row);
+    }
+    text_x = 0;
+    text_y = 0;
+    text_mark_all_dirty();
+}
+
+void console_clear_framebuffer(void) {
+    fb_hide_cursor();
+    text_clear();
+    fb_clear();
+    fb_cursor_visible = 0;
+    fb_show_cursor();
+}
+
+void console_set_framebuffer_enabled(int enabled) {
+    fb_output_enabled = enabled != 0;
+    if (fb_output_enabled) {
+        fb_show_cursor();
+    } else {
+        fb_hide_cursor();
+    }
+}
+
+void console_set_screen_output_suppressed(int suppressed) {
+    screen_output_suppressed = suppressed != 0;
+}
+
+void console_enable_framebuffer_write_combining(void) {
+    if (fb == NULL) {
+        return;
+    }
+
+    uint64_t original = (uint64_t)fb->address;
+    uint64_t offset = original & (PAGE_SIZE - 1);
+    uint64_t virt_start = original & ~(PAGE_SIZE - 1);
+    uint64_t length = fb->pitch * fb->height + offset;
+    uint64_t page_count = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t phys_first = 0;
+
+    if (vmm_translate_kernel_addr(virt_start, &phys_first) != 0) {
+        console_write("[warn] framebuffer WC remap skipped: translate failed\n");
+        return;
+    }
+
+    uint64_t wc_base = FB_WC_BASE;
+    for (uint64_t i = 0; i < page_count; i++) {
+        uint64_t phys = phys_first + i * PAGE_SIZE;
+        uint64_t virt = wc_base + i * PAGE_SIZE;
+        if (vmm_map_page(virt, phys,
+                         VMM_FLAG_WRITABLE | VMM_FLAG_NO_EXEC | VMM_FLAG_WRITE_COMBINING) != 0) {
+            console_write("[warn] framebuffer WC remap skipped: map failed\n");
+            return;
+        }
+    }
+
+    fb->address = (void *)(wc_base + offset);
+    console_write("[info] framebuffer remapped write-combining\n");
+}
+
 static uint32_t fb_cols(void) {
-    return fb == NULL ? 0 : (uint32_t)(fb->width / FB_CHAR_WIDTH);
+    return text_cols;
 }
 
 static uint32_t fb_rows(void) {
-    return fb == NULL ? 0 : (uint32_t)(fb->height / FB_CHAR_HEIGHT);
+    return text_rows;
 }
 
 static void fb_fill_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t color) {
@@ -157,38 +273,82 @@ static void fb_fill_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height
         return;
     }
 
+    if (x >= fb->width || y >= fb->height) {
+        return;
+    }
+    if (x + width > fb->width) {
+        width = (uint32_t)fb->width - x;
+    }
+    if (y + height > fb->height) {
+        height = (uint32_t)fb->height - y;
+    }
+
+    uint8_t *base = (uint8_t *)fb->address;
     for (uint32_t row = 0; row < height; row++) {
-        for (uint32_t col = 0; col < width; col++) {
-            fb_put_pixel(x + col, y + row, color);
-        }
+        fb_fill_pixels(base + (y + row) * fb->pitch + x * 4, width, color);
     }
 }
 
-static void fb_clear_cell(uint32_t col, uint32_t row) {
-    fb_fill_rect(col * FB_CHAR_WIDTH, row * FB_CHAR_HEIGHT,
-                 FB_CHAR_WIDTH, FB_CHAR_HEIGHT, bg_color);
-}
-
-static void fb_scroll_up(void) {
-    if (fb == NULL || fb_rows() == 0) {
+static void fb_draw_char_at(uint32_t col, uint32_t row, char c) {
+    if (fb == NULL || col >= text_cols || row >= text_rows) {
         return;
     }
 
-    volatile uint8_t *base = (volatile uint8_t *)fb->address;
-    uint64_t line_bytes = fb->width * 4;
-    uint64_t scroll_bytes = FB_CHAR_HEIGHT * fb->pitch;
-    uint64_t copy_rows = fb->height > FB_CHAR_HEIGHT ? fb->height - FB_CHAR_HEIGHT : 0;
+    const uint8_t *glyph = font8x8_basic[(uint8_t)c < 128 ? (uint8_t)c : (uint8_t)' '];
+    uint32_t px = col * FB_CHAR_WIDTH;
+    uint32_t py = row * FB_CHAR_HEIGHT;
 
-    for (uint64_t y = 0; y < copy_rows; y++) {
-        volatile uint8_t *dst = base + y * fb->pitch;
-        volatile uint8_t *src = base + y * fb->pitch + scroll_bytes;
-        for (uint64_t x = 0; x < line_bytes; x++) {
-            dst[x] = src[x];
+    for (uint32_t glyph_row = 0; glyph_row < 8; glyph_row++) {
+        for (uint32_t glyph_col = 0; glyph_col < 8; glyph_col++) {
+            bool set = (glyph[glyph_row] & (1u << (7 - glyph_col))) != 0;
+            uint32_t color = set ? fg_color : bg_color;
+            fb_put_pixel(px + glyph_col, py + glyph_row * 2, color);
+            fb_put_pixel(px + glyph_col, py + glyph_row * 2 + 1, color);
         }
     }
+}
 
-    fb_fill_rect(0, (uint32_t)(fb->height - FB_CHAR_HEIGHT),
-                 (uint32_t)fb->width, FB_CHAR_HEIGHT, bg_color);
+static void fb_redraw_row(uint32_t row) {
+    if (fb == NULL || row >= text_rows) {
+        return;
+    }
+
+    fb_fill_rect(0, row * FB_CHAR_HEIGHT,
+                 text_cols * FB_CHAR_WIDTH, FB_CHAR_HEIGHT, bg_color);
+    for (uint32_t col = 0; col < text_cols; col++) {
+        char c = text_cells[row][col];
+        if (c != ' ') {
+            fb_draw_char_at(col, row, c);
+        }
+    }
+}
+
+static void fb_flush_dirty_rows(void) {
+    if (fb == NULL || !fb_output_enabled) {
+        return;
+    }
+
+    if (fb_dirty_all) {
+        fb_clear();
+        for (uint32_t row = 0; row < text_rows; row++) {
+            for (uint32_t col = 0; col < text_cols; col++) {
+                char c = text_cells[row][col];
+                if (c != ' ') {
+                    fb_draw_char_at(col, row, c);
+                }
+            }
+            text_dirty[row] = 0;
+        }
+        fb_dirty_all = 0;
+        return;
+    }
+
+    for (uint32_t row = 0; row < text_rows; row++) {
+        if (text_dirty[row]) {
+            fb_redraw_row(row);
+            text_dirty[row] = 0;
+        }
+    }
 }
 
 static void fb_draw_cursor(uint32_t color) {
@@ -219,9 +379,21 @@ static void fb_hide_cursor(void) {
 static void fb_newline(void) {
     text_x = 0;
     text_y++;
-    if (text_y >= fb_rows()) {
-        fb_scroll_up();
-        text_y = fb_rows() > 0 ? fb_rows() - 1 : 0;
+    if (text_y >= text_rows) {
+        if (text_rows == 0) {
+            text_y = 0;
+            return;
+        }
+        for (uint32_t row = 1; row < text_rows; row++) {
+            for (uint32_t col = 0; col < text_cols; col++) {
+                text_cells[row - 1][col] = text_cells[row][col];
+            }
+        }
+        for (uint32_t col = 0; col < text_cols; col++) {
+            text_cells[text_rows - 1][col] = ' ';
+        }
+        text_y = text_rows - 1;
+        text_mark_all_dirty();
     }
 }
 
@@ -233,11 +405,14 @@ static void fb_backspace(void) {
         text_x = fb_cols() > 0 ? fb_cols() - 1 : 0;
     }
 
-    fb_clear_cell(text_x, text_y);
+    if (text_y < text_rows && text_x < text_cols) {
+        text_cells[text_y][text_x] = ' ';
+        text_mark_row_dirty(text_y);
+    }
 }
 
 static void fb_putc(char c) {
-    if (fb == NULL || fb_cols() == 0 || fb_rows() == 0) {
+    if (text_cols == 0 || text_rows == 0) {
         return;
     }
 
@@ -251,36 +426,68 @@ static void fb_putc(char c) {
         return;
     }
 
-    if (text_x >= fb_cols()) {
+    if (text_x >= text_cols) {
         fb_newline();
     }
 
-    const uint8_t *glyph = font8x8_basic[(uint8_t)c < 128 ? (uint8_t)c : (uint8_t)' '];
-    uint32_t px = text_x * FB_CHAR_WIDTH;
-    uint32_t py = text_y * FB_CHAR_HEIGHT;
-
-    for (uint32_t row = 0; row < 8; row++) {
-        for (uint32_t col = 0; col < 8; col++) {
-            bool set = (glyph[row] & (1u << (7 - col))) != 0;
-            uint32_t color = set ? fg_color : bg_color;
-            fb_put_pixel(px + col, py + row * 2, color);
-            fb_put_pixel(px + col, py + row * 2 + 1, color);
-        }
-    }
+    text_cells[text_y][text_x] = c;
+    text_mark_row_dirty(text_y);
 
     text_x++;
-    if (text_x >= fb_cols()) {
+    if (text_x >= text_cols) {
         fb_newline();
     }
 }
 
-void console_write(const char *s) {
-    serial_write(s);
-    fb_hide_cursor();
-    while (*s != '\0') {
-        fb_putc(*s++);
+void console_write_n(const char *s, uint64_t len) {
+    if (s == NULL) {
+        return;
     }
-    fb_show_cursor();
+
+    int old_cursor_visible = fb_cursor_visible;
+    if (!screen_output_suppressed) {
+        fb_hide_cursor();
+    }
+
+    for (uint64_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == '\f') {
+            serial_write("\n");
+            console_set_framebuffer_enabled(1);
+            console_clear_framebuffer();
+            old_cursor_visible = 1;
+            continue;
+        }
+
+        if (c == '\n') {
+            serial_putc('\r');
+        }
+        serial_putc(c);
+
+        if (screen_output_suppressed || !fb_output_enabled) {
+            continue;
+        }
+
+        fb_putc(c);
+    }
+
+    if (!screen_output_suppressed) {
+        fb_flush_dirty_rows();
+    }
+    if (!screen_output_suppressed && (old_cursor_visible || fb_output_enabled)) {
+        fb_show_cursor();
+    }
+}
+
+void console_write(const char *s) {
+    uint64_t len = 0;
+    if (s == NULL) {
+        return;
+    }
+    while (s[len] != '\0') {
+        len++;
+    }
+    console_write_n(s, len);
 }
 
 void console_write_u64(uint64_t value) {
@@ -387,6 +594,7 @@ void console_printf(const char *fmt, ...) {
 
 void kernel_panic(const char *message) {
     __asm__ volatile ("cli");
+    console_set_framebuffer_enabled(1);
     console_write("\nPANIC: ");
     console_write(message);
     console_write("\n");
@@ -395,8 +603,18 @@ void kernel_panic(const char *message) {
 
 void console_init_framebuffer(struct limine_framebuffer *framebuffer) {
     fb = framebuffer;
+    text_cols = 0;
+    text_rows = 0;
+    if (fb != NULL) {
+        text_cols = min_u32((uint32_t)(fb->width / FB_CHAR_WIDTH), TEXT_MAX_COLS);
+        text_rows = min_u32((uint32_t)(fb->height / FB_CHAR_HEIGHT), TEXT_MAX_ROWS);
+    }
     text_x = 0;
     text_y = 0;
     fb_cursor_visible = 0;
+    fb_output_enabled = 1;
+    screen_output_suppressed = 0;
+    fb_dirty_all = 0;
+    text_clear();
     fb_clear();
 }

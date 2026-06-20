@@ -1257,7 +1257,9 @@ static void run_shell_script_self_test(char *buffer, uint64_t buffer_len) {
 
 __attribute__((noreturn))
 static void run_interactive_shell(uint64_t input_fd, char *buffer, uint64_t buffer_len) {
-    static const char ready[] = "shell.elf: interactive shell ready\n";
+    static const char ready[] =
+        "\fshell.elf: interactive shell ready\n"
+        "TangPingOS is ready. Type help for commands.\n";
     static const char prompt_prefix[] = "TangPingOS:";
     static const char prompt_suffix[] = "> ";
     char line[SHELL_LINE_MAX];

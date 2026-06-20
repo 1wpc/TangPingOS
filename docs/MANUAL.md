@@ -21,6 +21,12 @@ TangPingOS:/>
 The prompt format is `TangPingOS:<cwd>>`. For example, `TangPingOS:/dev>` means
 the current working directory is `/dev`.
 
+On real hardware the framebuffer display is intentionally quiet during boot:
+early status is shown briefly, detailed kernel/userland startup logs continue on
+the serial console, and the framebuffer is cleared when the interactive shell is
+ready. This avoids very slow full-screen scrolling on high-resolution UEFI GOP
+framebuffers.
+
 ## Boot Flow
 
 Current startup is:
@@ -319,6 +325,13 @@ Expected constraints on real hardware:
 
 - The machine must be x86_64. Apple Silicon Macs cannot boot this OS directly.
 - UEFI GOP framebuffer is expected; this is how the screen output is obtained.
+- The framebuffer console is simple and CPU-rendered. TangPingOS reduces real
+  hardware display cost in three layers: verbose boot logs are kept off the
+  framebuffer until the interactive shell is ready, the framebuffer is remapped
+  with x86 PAT write-combining for faster sequential pixel writes, and console
+  text is stored in a shadow character buffer so scrolling updates RAM first and
+  only redraws dirty rows to the framebuffer. Normal kernel info logs are kept
+  on the serial console so they do not overwrite the interactive screen.
 - Secure Boot is not supported.
 - Disk access is not implemented, so the OS only uses the initrd packed into the
   boot image after startup.
