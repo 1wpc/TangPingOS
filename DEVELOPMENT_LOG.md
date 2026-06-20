@@ -13,3 +13,22 @@
 - 2026-06-19: 新增 `dup2(oldfd, newfd)` syscall，标准 fd 0/1/2 现在可被已打开描述符覆盖。
 - 2026-06-19: 移除默认 A/B 心跳 demo task，并让 `dup2` 后的 fd 共享同一个打开文件对象和读取 offset。
 - 2026-06-19: 关闭周期性 PIT tick 串口日志，让启动后等待输入时的输出保持安静。
+- 2026-06-19: 移除交互输入等待/唤醒的调度器普通日志，避免每次键盘输入刷出调试提示。
+- 2026-06-19: 关闭普通任务切换串口日志，避免 shell 等待输入时刷出 scheduler 调试行。
+- 2026-06-19: 增强 framebuffer 控制台，新增屏幕滚动、退格擦除和简单下划线光标。
+- 2026-06-19: 将串口和 framebuffer 控制台实现从启动入口拆分到独立 `kernel/console.c` 模块。
+- 2026-06-19: 新增轻量内核日志层，支持 error/warn/info/debug 等级并将普通调试输出降级为 debug。
+- 2026-06-19: 新增可写 ramfs 后端和 `write_file` syscall，用户态可创建并读取内存文件。
+- 2026-06-20: 扩展 `write(fd, buf, len)`，已打开的 ramfs 文件描述符现在可通过普通 fd 写入。
+- 2026-06-20: 新增 `open` flags（O_CREAT/O_TRUNC/O_APPEND），ramfs 文件可通过 open/write/read 完成创建、覆盖和追加。
+- 2026-06-20: 新增 `lseek(fd, offset, whence)` syscall，用户态可移动 fd offset 并对 ramfs 文件做随机读写。
+- 2026-06-20: 增强交互式 shell，新增 cwd/相对路径和 pwd/cd/echo/clear/touch/append/rm/stat 等命令，并为 ramfs 接入 unlink 删除能力。
+- 2026-06-20: 新增启动期 shell 脚本自测，自动覆盖相对路径、cwd、write/append/cat/stat/rm 等交互命令路径。
+- 2026-06-20: 新增 `spawn(path)` syscall 和 shell `run` 命令，initrd 中的 `/bin/hello.elf` 可作为独立用户程序启动。
+- 2026-06-20: 在 README 中新增 TangPingOS 使用说明，整理 shell 命令、示例路径、运行示例和当前限制。
+- 2026-06-20: 为 `spawn` 和 shell `run` 增加简单 argv 参数传递，`/bin/hello.elf` 现在能打印收到的 argc/argv。
+- 2026-06-20: 新增系统观察 syscall 和 shell 命令 `ps/mem/uptime/sysinfo`，用户态可查看任务、内存、运行 tick 和硬件摘要。
+- 2026-06-20: 完善 ramfs 文件操作体验，新增 shell 命令 `cp/mv/hexdump/edit`，并验证极简行编辑器可保存文本。
+- 2026-06-20: 将启动链路拆分为 `kernel -> init.elf -> /bin/shell.elf`，交互 shell 现在作为独立用户程序从 initrd 启动。
+- 2026-06-20: 新增 `userspace/lib` 用户态公共库，集中 syscall wrapper、基础常量、字符串工具和文本/数字输出函数。
+- 2026-06-20: 新增独立用户程序 `/bin/ls.elf` 和 `/bin/cat.elf`，并将详细用户/开发说明拆分到 `docs/MANUAL.md`。

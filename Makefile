@@ -1,8 +1,13 @@
 ARCH := x86_64
 BUILD_DIR := build
 ISO_ROOT := $(BUILD_DIR)/iso_root
+INITRD_ROOT := $(BUILD_DIR)/initrd_root
 KERNEL := $(BUILD_DIR)/kernel.elf
 INIT := $(BUILD_DIR)/init.elf
+USER_SHELL := $(BUILD_DIR)/shell.elf
+HELLO := $(BUILD_DIR)/hello.elf
+LS := $(BUILD_DIR)/ls.elf
+CAT := $(BUILD_DIR)/cat.elf
 INITRD := $(BUILD_DIR)/initrd.tar
 ISO := $(BUILD_DIR)/TangPingOS.iso
 
@@ -90,6 +95,7 @@ USER_CFLAGS := \
 	-O2 \
 	-Wall \
 	-Wextra \
+	-Iuserspace/lib \
 	$(EXTRA_USER_CFLAGS)
 
 USER_LDFLAGS := \
@@ -107,16 +113,34 @@ KERNEL_OBJECTS := $(KERNEL_C_OBJECTS) $(KERNEL_ASM_OBJECTS)
 
 INIT_SOURCES := $(shell find userspace/init -name '*.c')
 INIT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(INIT_SOURCES))
+USER_LIB_SOURCES := $(shell find userspace/lib -name '*.c' 2>/dev/null)
+USER_LIB_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(USER_LIB_SOURCES))
+SHELL_SOURCES := $(shell find userspace/shell -name '*.c' 2>/dev/null)
+SHELL_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(SHELL_SOURCES))
+HELLO_SOURCES := $(shell find userspace/hello -name '*.c' 2>/dev/null)
+HELLO_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(HELLO_SOURCES))
+LS_SOURCES := $(shell find userspace/ls -name '*.c' 2>/dev/null)
+LS_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(LS_SOURCES))
+CAT_SOURCES := $(shell find userspace/cat -name '*.c' 2>/dev/null)
+CAT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(CAT_SOURCES))
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
-INITRD_PATHS := $(patsubst initrd/%,%,$(INITRD_FILES))
+INITRD_PACKED_PATHS := $(patsubst initrd/%,%,$(INITRD_FILES)) bin/shell.elf bin/hello.elf bin/ls.elf bin/cat.elf
 
-.PHONY: all kernel init initrd iso run test-exception test-page-fault test-user-fault clean check-tools check-uefi
+.PHONY: all kernel init shell hello ls cat initrd iso run test-exception test-page-fault test-user-fault test-user-programs clean check-tools check-uefi
 
 all: iso
 
 kernel: $(KERNEL)
 
 init: $(INIT)
+
+shell: $(USER_SHELL)
+
+hello: $(HELLO)
+
+ls: $(LS)
+
+cat: $(CAT)
 
 initrd: $(INITRD)
 
@@ -144,14 +168,37 @@ test-user-fault:
 	$(MAKE) clean
 	$(MAKE) iso EXTRA_USER_CFLAGS=-DTANGPINGOS_TEST_USER_FAULT
 
+test-user-programs:
+	$(MAKE) clean
+	$(MAKE) iso EXTRA_USER_CFLAGS=-DTANGPINGOS_TEST_USER_PROGRAMS
+
 $(KERNEL): $(KERNEL_OBJECTS) linker/kernel.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJECTS) -o $@
 
-$(INIT): $(INIT_OBJECTS) linker/user.ld | $(BUILD_DIR)
-	$(LD) $(USER_LDFLAGS) $(INIT_OBJECTS) -o $@
+$(INIT): $(INIT_OBJECTS) $(USER_LIB_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(INIT_OBJECTS) $(USER_LIB_OBJECTS) -o $@
 
-$(INITRD): $(INITRD_FILES) | $(BUILD_DIR)
-	$(TAR) --format=ustar -cf $@ -C initrd $(INITRD_PATHS)
+$(USER_SHELL): $(SHELL_OBJECTS) $(USER_LIB_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(SHELL_OBJECTS) $(USER_LIB_OBJECTS) -o $@
+
+$(HELLO): $(HELLO_OBJECTS) $(USER_LIB_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(HELLO_OBJECTS) $(USER_LIB_OBJECTS) -o $@
+
+$(LS): $(LS_OBJECTS) $(USER_LIB_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(LS_OBJECTS) $(USER_LIB_OBJECTS) -o $@
+
+$(CAT): $(CAT_OBJECTS) $(USER_LIB_OBJECTS) linker/user.ld | $(BUILD_DIR)
+	$(LD) $(USER_LDFLAGS) $(CAT_OBJECTS) $(USER_LIB_OBJECTS) -o $@
+
+$(INITRD): $(INITRD_FILES) $(USER_SHELL) $(HELLO) $(LS) $(CAT) | $(BUILD_DIR)
+	rm -rf $(INITRD_ROOT)
+	mkdir -p $(INITRD_ROOT)/bin
+	cp -R initrd/. $(INITRD_ROOT)/
+	cp $(USER_SHELL) $(INITRD_ROOT)/bin/shell.elf
+	cp $(HELLO) $(INITRD_ROOT)/bin/hello.elf
+	cp $(LS) $(INITRD_ROOT)/bin/ls.elf
+	cp $(CAT) $(INITRD_ROOT)/bin/cat.elf
+	$(TAR) --format=ustar -cf $@ -C $(INITRD_ROOT) $(INITRD_PACKED_PATHS)
 
 $(BUILD_DIR)/kernel/%.o: kernel/%.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)

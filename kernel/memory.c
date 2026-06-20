@@ -1,5 +1,6 @@
 #include <console.h>
 #include <limine.h>
+#include <log.h>
 #include <memory.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -324,7 +325,7 @@ uint64_t vmm_create_address_space(void) {
         new_pml4[i] = kernel_pml4[i];
     }
 
-    console_printf("address space created: cr3=%x\n", cr3_phys);
+    log_debug("address space created: cr3=%x\n", cr3_phys);
     return cr3_phys;
 }
 
@@ -507,10 +508,10 @@ void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset) {
         }
     }
 
-    console_printf("HHDM offset: %x\n", hhdm_base);
-    console_printf("kernel address space: cr3=%x\n", kernel_cr3);
-    console_printf("PMM initialized: managed pages %u free pages %u\n",
-                   pmm_managed_page_count, pmm_free_page_count);
+    log_info("HHDM offset: %x\n", hhdm_base);
+    log_info("kernel address space: cr3=%x\n", kernel_cr3);
+    log_info("PMM initialized: managed pages %u free pages %u\n",
+             pmm_managed_page_count, pmm_free_page_count);
 }
 
 void memory_self_test(void) {
@@ -552,6 +553,6 @@ void memory_self_test(void) {
     }
     kfree(reuse_b);
 
-    console_printf("memory self-test OK: free pages %u -> %u\n",
-                   before, pmm_free_pages());
+    log_info("memory self-test OK: free pages %u -> %u\n",
+             before, pmm_free_pages());
 }

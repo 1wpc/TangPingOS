@@ -1,5 +1,6 @@
 #include <console.h>
 #include <initrd.h>
+#include <log.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <vfs.h>
@@ -45,6 +46,7 @@ static uint64_t initrd_read_file(
     void *context
 );
 static int initrd_list_dir(const char *path, uint64_t index, struct vfs_dirent *out, void *context);
+static uint64_t initrd_file_size(const char *path, void *context);
 
 static int chars_equal(const char *a, const char *b) {
     uint64_t i = 0;
@@ -56,6 +58,23 @@ static int chars_equal(const char *a, const char *b) {
     }
 
     return a[i] == b[i];
+}
+
+static uint64_t string_length(const char *s) {
+    uint64_t len = 0;
+    while (s != NULL && s[len] != '\0') {
+        len++;
+    }
+    return len;
+}
+
+static int chars_equal_n(const char *a, const char *b, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int ends_with(const char *s, const char *suffix) {
@@ -149,25 +168,60 @@ static void copy_user_path(char *dst, const char *path) {
     dst[i] = '\0';
 }
 
-static void copy_dirent_name(char *dst, const char *src) {
+static int path_child_for_dir(const char *file_name, const char *dir,
+                              const char **child, uint64_t *child_len,
+                              int *is_dir) {
+    uint64_t dir_len = string_length(dir);
+    const char *rest = file_name;
+
+    if (dir_len > 0) {
+        if (!chars_equal_n(file_name, dir, dir_len) || file_name[dir_len] != '/') {
+            return 0;
+        }
+        rest = file_name + dir_len + 1;
+    }
+
+    if (rest[0] == '\0') {
+        return 0;
+    }
+
+    uint64_t len = 0;
+    while (rest[len] != '\0' && rest[len] != '/') {
+        len++;
+    }
+
+    *child = rest;
+    *child_len = len;
+    *is_dir = rest[len] == '/';
+    return len > 0;
+}
+
+static int listed_child_before(const char *dir, uint64_t file_index,
+                               const char *child, uint64_t child_len) {
+    for (uint64_t i = 0; i < file_index; i++) {
+        const char *candidate_child;
+        uint64_t candidate_len;
+        int candidate_is_dir;
+
+        if (!path_child_for_dir(files[i].name, dir, &candidate_child,
+                                &candidate_len, &candidate_is_dir)) {
+            continue;
+        }
+        if (candidate_len == child_len && chars_equal_n(candidate_child, child, child_len)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void copy_child_name(char *dst, const char *src, uint64_t src_len) {
     uint64_t i = 0;
 
-    while (i + 1 < VFS_DIRENT_NAME_MAX && src[i] != '\0') {
+    while (i + 1 < VFS_DIRENT_NAME_MAX && i < src_len) {
         dst[i] = src[i];
         i++;
     }
     dst[i] = '\0';
-}
-
-static int is_root_path(const char *path) {
-    const char *normalized;
-
-    if (path == NULL) {
-        return 0;
-    }
-
-    normalized = normalize_path(path);
-    return normalized[0] == '\0' || (normalized[0] == '.' && normalized[1] == '\0');
 }
 
 static struct limine_file *find_initrd_module(struct limine_module_response *modules) {
@@ -194,11 +248,11 @@ void initrd_init(struct limine_module_response *modules) {
     file_count = 0;
 
     if (module == NULL) {
-        console_write("initrd: module not found\n");
+        log_error("initrd: module not found\n");
         return;
     }
 
-    console_printf("initrd module: path=%s size=%u\n", module->path, module->size);
+    log_info("initrd module: path=%s size=%u\n", module->path, module->size);
 
     const uint8_t *cursor = (const uint8_t *)module->address;
     const uint8_t *end = cursor + module->size;
@@ -210,7 +264,7 @@ void initrd_init(struct limine_module_response *modules) {
         uint64_t record_size = TAR_BLOCK_SIZE + ((size + TAR_BLOCK_SIZE - 1) & ~(TAR_BLOCK_SIZE - 1));
 
         if (data + size > end || cursor + record_size > end) {
-            console_write("initrd: truncated tar entry\n");
+            log_error("initrd: truncated tar entry\n");
             break;
         }
 
@@ -219,14 +273,16 @@ void initrd_init(struct limine_module_response *modules) {
             copy_tar_name(file->name, header);
             file->data = data;
             file->size = size;
-            console_printf("initrd file: %s size=%u\n", file->name, file->size);
+            log_debug("initrd file: %s size=%u\n", file->name, file->size);
         }
 
         cursor += record_size;
     }
 
-    if (file_count > 0 && vfs_register_readonly_fs("initrd", initrd_read_file, initrd_list_dir, NULL) != 0) {
-        console_write("initrd: failed to register VFS backend\n");
+    if (file_count > 0 &&
+        vfs_register_fs_ex("initrd", initrd_read_file, initrd_list_dir, 0,
+                           initrd_file_size, 0, 0, NULL) != 0) {
+        log_error("initrd: failed to register VFS backend\n");
     }
 }
 
@@ -270,18 +326,55 @@ static uint64_t initrd_read_file(
 }
 
 static int initrd_list_dir(const char *path, uint64_t index, struct vfs_dirent *out, void *context) {
+    const char *dir;
+    uint64_t seen = 0;
     (void)context;
 
-    if (!is_root_path(path) || out == NULL) {
+    if (path == NULL || out == NULL) {
         return -1;
     }
 
-    if (index >= file_count) {
-        return 0;
+    dir = normalize_path(path);
+    if (dir[0] == '.' && dir[1] == '\0') {
+        dir = "";
     }
 
-    copy_dirent_name(out->name, files[index].name);
-    out->type = VFS_DIRENT_TYPE_FILE;
-    out->size = files[index].size;
-    return 1;
+    for (uint64_t i = 0; i < file_count; i++) {
+        const char *child;
+        uint64_t child_len;
+        int is_dir;
+
+        if (!path_child_for_dir(files[i].name, dir, &child, &child_len, &is_dir) ||
+            listed_child_before(dir, i, child, child_len)) {
+            continue;
+        }
+
+        if (seen == index) {
+            copy_child_name(out->name, child, child_len);
+            out->type = is_dir ? VFS_DIRENT_TYPE_DIR : VFS_DIRENT_TYPE_FILE;
+            out->size = is_dir ? 0 : files[i].size;
+            return 1;
+        }
+        seen++;
+    }
+
+    return 0;
+}
+
+static uint64_t initrd_file_size(const char *path, void *context) {
+    char normalized[INITRD_NAME_MAX];
+    (void)context;
+
+    if (path == NULL) {
+        return (uint64_t)-1;
+    }
+
+    copy_user_path(normalized, path);
+    for (uint64_t i = 0; i < file_count; i++) {
+        if (chars_equal(normalized, files[i].name)) {
+            return files[i].size;
+        }
+    }
+
+    return (uint64_t)-1;
 }

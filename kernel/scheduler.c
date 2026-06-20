@@ -1,4 +1,5 @@
 #include <console.h>
+#include <log.h>
 #include <memory.h>
 #include <scheduler.h>
 #include <stddef.h>
@@ -19,6 +20,7 @@
 #define TASK_MAX_OPEN_FILES 8
 #define TASK_FIRST_FILE_FD 3
 #define TASK_PATH_MAX 128
+#define TASK_NAME_MAX 32
 
 enum task_file_type {
     TASK_FILE_NONE,
@@ -44,11 +46,12 @@ struct task_open_file {
     enum task_file_type type;
     char path[TASK_PATH_MAX];
     uint64_t offset;
+    int append;
 };
 
 struct task {
     uint64_t pid;
-    const char *name;
+    char name[TASK_NAME_MAX];
     uint8_t *stack;
     uint64_t stack_size;
     uint64_t kernel_stack_top;
@@ -109,6 +112,21 @@ static void copy_file_path(char *dst, const char *src) {
     dst[i] = '\0';
 }
 
+static void copy_task_name(char *dst, const char *src) {
+    uint64_t i = 0;
+
+    if (src == NULL) {
+        dst[0] = '\0';
+        return;
+    }
+
+    while (i + 1 < TASK_NAME_MAX && src[i] != '\0') {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
 static void reset_task_file(struct task_file *file) {
     file->in_use = 0;
     file->open_file_index = -1;
@@ -119,6 +137,7 @@ static void reset_task_open_file(struct task_open_file *file) {
     file->ref_count = 0;
     file->type = TASK_FILE_NONE;
     file->offset = 0;
+    file->append = 0;
     file->path[0] = '\0';
 }
 
@@ -141,7 +160,7 @@ static struct task_open_file *current_open_file_for_fd(int fd) {
     return open_file->in_use ? open_file : NULL;
 }
 
-static int allocate_current_open_file(enum task_file_type type, const char *path) {
+static int allocate_current_open_file(enum task_file_type type, const char *path, int append) {
     for (uint64_t i = 0; i < TASK_MAX_OPEN_FILES; i++) {
         struct task_open_file *file = &current_task->open_files[i];
         if (file->in_use) {
@@ -152,6 +171,7 @@ static int allocate_current_open_file(enum task_file_type type, const char *path
         file->ref_count = 0;
         file->type = type;
         file->offset = 0;
+        file->append = append;
         copy_file_path(file->path, path);
         return (int)i;
     }
@@ -205,7 +225,7 @@ static void switch_task_context(struct task *task) {
 __attribute__((noreturn))
 static void task_trampoline(task_entry_t entry, void *arg) {
     entry(arg);
-    console_write("task returned; stopping\n");
+    log_warn("task returned; stopping\n");
     for (;;) {
         __asm__ volatile ("hlt");
     }
@@ -219,7 +239,7 @@ void scheduler_init(void) {
     current_task = NULL;
     pending_stack_free_count = 0;
     scheduler_ready = 1;
-    console_write("scheduler initialized\n");
+    log_info("scheduler initialized\n");
 }
 
 int scheduler_create_task(const char *name, task_entry_t entry, void *arg) {
@@ -231,7 +251,7 @@ int scheduler_create_task(const char *name, task_entry_t entry, void *arg) {
     memset_local(task, 0, sizeof(*task));
 
     task->pid = next_pid++;
-    task->name = name;
+    copy_task_name(task->name, name);
     task->stack_size = TASK_STACK_SIZE;
     task->stack = kmalloc(TASK_STACK_SIZE);
     task->state = TASK_RUNNABLE;
@@ -253,13 +273,14 @@ int scheduler_create_task(const char *name, task_entry_t entry, void *arg) {
     task->kernel_stack_top = stack_top;
     task->frame = frame;
 
-    console_printf("task created: pid=%u name=%s stack=%x cr3=%x\n",
-                   task->pid, name, (uint64_t)task->stack, task->cr3);
+    log_debug("task created: pid=%u name=%s stack=%x cr3=%x\n",
+              task->pid, task->name, (uint64_t)task->stack, task->cr3);
     return 0;
 }
 
 int scheduler_create_user_task(const char *name, uint64_t cr3_phys,
                                uint64_t entry, uint64_t user_stack_top,
+                               uint64_t arg0, uint64_t arg1,
                                uint64_t brk_start, uint64_t brk_limit) {
     if (task_count >= MAX_TASKS) {
         return -1;
@@ -269,7 +290,7 @@ int scheduler_create_user_task(const char *name, uint64_t cr3_phys,
     memset_local(task, 0, sizeof(*task));
 
     task->pid = next_pid++;
-    task->name = name;
+    copy_task_name(task->name, name);
     task->stack_size = TASK_STACK_SIZE;
     task->stack = kmalloc(TASK_STACK_SIZE);
     task->state = TASK_RUNNABLE;
@@ -284,6 +305,8 @@ int scheduler_create_user_task(const char *name, uint64_t cr3_phys,
     memset_local(frame, 0, sizeof(*frame));
 
     frame->rip = entry;
+    frame->rdi = arg0;
+    frame->rsi = arg1;
     frame->cs = USER_CODE_SELECTOR;
     frame->rflags = 0x202;
     frame->rsp = user_stack_top;
@@ -292,9 +315,9 @@ int scheduler_create_user_task(const char *name, uint64_t cr3_phys,
     task->kernel_stack_top = kernel_stack_top;
     task->frame = frame;
 
-    console_printf("user task created: pid=%u name=%s user_rip=%x user_rsp=%x kernel_stack=%x cr3=%x brk=%x limit=%x\n",
-                   task->pid, name, entry, user_stack_top, (uint64_t)task->stack,
-                   task->cr3, task->brk_current, task->brk_limit);
+    log_info("user task created: pid=%u name=%s user_rip=%x user_rsp=%x kernel_stack=%x cr3=%x brk=%x limit=%x\n",
+             task->pid, task->name, entry, user_stack_top, (uint64_t)task->stack,
+             task->cr3, task->brk_current, task->brk_limit);
     return 0;
 }
 
@@ -318,8 +341,8 @@ static void wake_sleeping_tasks(void) {
         struct task *task = &tasks[i];
         if (task->state == TASK_SLEEPING && task->wake_tick <= scheduler_tick_count) {
             task->state = TASK_RUNNABLE;
-            console_printf("task woke: pid=%u name=%s tick=%u\n",
-                           task->pid, task->name, scheduler_tick_count);
+            log_debug("task woke: pid=%u name=%s tick=%u\n",
+                      task->pid, task->name, scheduler_tick_count);
         }
     }
 }
@@ -331,7 +354,7 @@ static void ensure_boot_task(struct interrupt_frame *frame) {
 
     memset_local(&boot_task, 0, sizeof(boot_task));
     boot_task.pid = 0;
-    boot_task.name = "boot";
+    copy_task_name(boot_task.name, "boot");
     boot_task.state = TASK_RUNNABLE;
     boot_task.cr3 = vmm_current_address_space();
     boot_task.kernel_stack_top = align_down((uint64_t)frame + sizeof(*frame), 16);
@@ -341,6 +364,8 @@ static void ensure_boot_task(struct interrupt_frame *frame) {
 }
 
 static struct interrupt_frame *switch_to_task(struct task *next, const char *reason) {
+    (void)reason;
+
     if (next == current_task) {
         return current_task->frame;
     }
@@ -348,11 +373,6 @@ static struct interrupt_frame *switch_to_task(struct task *next, const char *rea
     current_task = next;
     current_task->switches++;
     switch_task_context(current_task);
-
-    if (current_task->switches <= 4 || (current_task->switches % 20) == 0) {
-        console_printf("scheduler: %s pid=%u name=%s cr3=%x\n",
-                       reason, current_task->pid, current_task->name, current_task->cr3);
-    }
 
     return current_task->frame;
 }
@@ -378,8 +398,8 @@ static void release_task_resources(struct task *task) {
     uint64_t after = pmm_free_pages();
     task->cr3 = vmm_kernel_address_space();
     task->resources_released = 1;
-    console_printf("task resources released: pid=%u pages=%u free=%u->%u\n",
-                   task->pid, released, before, after);
+    log_info("task resources released: pid=%u pages=%u free=%u->%u\n",
+             task->pid, released, before, after);
 
     if (task->stack != NULL) {
         if (pending_stack_free_count >= MAX_PENDING_STACK_FREE) {
@@ -396,7 +416,7 @@ static void reclaim_pending_stacks(void) {
     while (pending_stack_free_count > 0) {
         void *stack = pending_stack_free[--pending_stack_free_count];
         kfree(stack);
-        console_printf("kernel stack reclaimed: %x\n", (uint64_t)stack);
+        log_info("kernel stack reclaimed: %x\n", (uint64_t)stack);
     }
 }
 
@@ -426,15 +446,15 @@ struct interrupt_frame *scheduler_on_timer_tick(struct interrupt_frame *frame) {
 
 struct interrupt_frame *scheduler_exit_current(struct interrupt_frame *frame, uint64_t status) {
     if (current_task == NULL || current_task == &boot_task) {
-        console_printf("sys_exit ignored without current user task\n");
+        log_warn("sys_exit ignored without current user task\n");
         return frame;
     }
 
     current_task->frame = frame;
     current_task->state = TASK_STOPPED;
     current_task->exit_status = status;
-    console_printf("task exited: pid=%u name=%s status=%u\n",
-                   current_task->pid, current_task->name, status);
+    log_info("task exited: pid=%u name=%s status=%u\n",
+             current_task->pid, current_task->name, status);
 
     quantum_ticks = 0;
     struct task *finished = current_task;
@@ -452,9 +472,9 @@ struct interrupt_frame *scheduler_fault_current(struct interrupt_frame *frame, u
     current_task->frame = frame;
     current_task->state = TASK_STOPPED;
     current_task->exit_status = 128 + vector;
-    console_printf("task killed: pid=%u name=%s vector=%u fault=%x status=%u\n",
-                   current_task->pid, current_task->name, vector, fault_addr,
-                   current_task->exit_status);
+    log_warn("task killed: pid=%u name=%s vector=%u fault=%x status=%u\n",
+             current_task->pid, current_task->name, vector, fault_addr,
+             current_task->exit_status);
 
     quantum_ticks = 0;
     struct task *faulted = current_task;
@@ -487,8 +507,8 @@ struct interrupt_frame *scheduler_sleep_current(struct interrupt_frame *frame, u
     current_task->frame = frame;
     current_task->state = TASK_SLEEPING;
     current_task->wake_tick = scheduler_tick_count + ticks;
-    console_printf("task sleeping: pid=%u name=%s until_tick=%u\n",
-                   current_task->pid, current_task->name, current_task->wake_tick);
+    log_debug("task sleeping: pid=%u name=%s until_tick=%u\n",
+              current_task->pid, current_task->name, current_task->wake_tick);
 
     quantum_ticks = 0;
     struct task *next = next_runnable_task();
@@ -502,8 +522,6 @@ struct interrupt_frame *scheduler_wait_current_for_input(struct interrupt_frame 
 
     current_task->frame = frame;
     current_task->state = TASK_WAITING_INPUT;
-    console_printf("task waiting for input: pid=%u name=%s\n",
-                   current_task->pid, current_task->name);
 
     quantum_ticks = 0;
     struct task *next = next_runnable_task();
@@ -515,10 +533,25 @@ void scheduler_wake_input_waiters(void) {
         struct task *task = &tasks[i];
         if (task->state == TASK_WAITING_INPUT) {
             task->state = TASK_RUNNABLE;
-            console_printf("task input ready: pid=%u name=%s\n",
-                           task->pid, task->name);
         }
     }
+}
+
+int scheduler_task_info(uint64_t index, struct scheduler_task_info *out) {
+    if (out == NULL) {
+        return -1;
+    }
+    if (index >= task_count) {
+        return 0;
+    }
+
+    struct task *task = &tasks[index];
+    out->pid = task->pid;
+    out->state = task->state;
+    out->exit_status = task->exit_status;
+    out->switches = task->switches;
+    copy_task_name(out->name, task->name);
+    return 1;
 }
 
 uint64_t scheduler_current_pid(void) {
@@ -568,8 +601,8 @@ uint64_t scheduler_set_current_brk(uint64_t new_break) {
         }
 
         if (map_end > map_start) {
-            console_printf("heap grew: pid=%u old=%x new=%x mapped_to=%x\n",
-                           current_task->pid, old_break, new_break, map_end);
+            log_debug("heap grew: pid=%u old=%x new=%x mapped_to=%x\n",
+                      current_task->pid, old_break, new_break, map_end);
         }
     }
 
@@ -577,18 +610,38 @@ uint64_t scheduler_set_current_brk(uint64_t new_break) {
     return current_task->brk_current;
 }
 
-int scheduler_open_current_file(const char *path) {
+int scheduler_open_current_file(const char *path, uint64_t flags) {
     if (current_task == NULL || current_task == &boot_task || path == NULL) {
         return -1;
     }
 
+    enum task_file_type type = tty_is_path(path) ? TASK_FILE_TTY : TASK_FILE_VFS;
+    int append = (flags & OPEN_APPEND) != 0;
+    if (type == TASK_FILE_TTY) {
+        flags = 0;
+        append = 0;
+    }
+
     if (!vfs_file_exists(path)) {
+        if ((flags & OPEN_CREATE) == 0 || vfs_create_file(path) != 0) {
+            return -1;
+        }
+    } else if ((flags & OPEN_TRUNC) != 0 && vfs_truncate_file(path, 0) != 0) {
         return -1;
     }
 
-    int open_file_index = allocate_current_open_file(tty_is_path(path) ? TASK_FILE_TTY : TASK_FILE_VFS, path);
+    int open_file_index = allocate_current_open_file(type, path, append);
     if (open_file_index < 0) {
         return -1;
+    }
+
+    if (type == TASK_FILE_VFS && append) {
+        uint64_t size = vfs_file_size(path);
+        if (size == (uint64_t)-1) {
+            reset_task_open_file(&current_task->open_files[open_file_index]);
+            return -1;
+        }
+        current_task->open_files[open_file_index].offset = size;
     }
 
     for (uint64_t i = TASK_FIRST_FILE_FD; i < TASK_MAX_FDS; i++) {
@@ -602,9 +655,9 @@ int scheduler_open_current_file(const char *path) {
         current_task->open_files[open_file_index].ref_count++;
 
         int fd = (int)i;
-        console_printf("fd opened: pid=%u fd=%u path=%s\n",
-                       current_task->pid, (uint64_t)fd,
-                       current_task->open_files[open_file_index].path);
+        log_debug("fd opened: pid=%u fd=%u path=%s flags=%u\n",
+                  current_task->pid, (uint64_t)fd,
+                  current_task->open_files[open_file_index].path, flags);
         return fd;
     }
 
@@ -651,6 +704,86 @@ uint64_t scheduler_read_current_file(int fd, void *buffer, uint64_t len) {
     return read;
 }
 
+uint64_t scheduler_write_current_file(int fd, const void *buffer, uint64_t len) {
+    if (current_task == NULL || current_task == &boot_task || buffer == NULL) {
+        return (uint64_t)-1;
+    }
+
+    if (fd < 0 || fd >= TASK_MAX_FDS) {
+        return (uint64_t)-1;
+    }
+
+    struct task_open_file *file = current_open_file_for_fd(fd);
+    if (file == NULL || file->type != TASK_FILE_VFS) {
+        return (uint64_t)-1;
+    }
+
+    uint64_t write_offset = file->offset;
+    if (file->append) {
+        write_offset = vfs_file_size(file->path);
+        if (write_offset == (uint64_t)-1) {
+            return (uint64_t)-1;
+        }
+    }
+
+    uint64_t written = vfs_write_existing_file(file->path, write_offset, buffer, len);
+    if (written != (uint64_t)-1) {
+        file->offset = write_offset + written;
+    }
+
+    return written;
+}
+
+uint64_t scheduler_seek_current_file(int fd, int64_t offset, uint64_t whence) {
+    if (current_task == NULL || current_task == &boot_task) {
+        return (uint64_t)-1;
+    }
+
+    if (fd < 0 || fd >= TASK_MAX_FDS) {
+        return (uint64_t)-1;
+    }
+
+    struct task_open_file *file = current_open_file_for_fd(fd);
+    if (file == NULL || file->type != TASK_FILE_VFS) {
+        return (uint64_t)-1;
+    }
+
+    uint64_t base;
+    if (whence == SEEK_SET) {
+        base = 0;
+    } else if (whence == SEEK_CUR) {
+        base = file->offset;
+    } else if (whence == SEEK_END) {
+        base = vfs_file_size(file->path);
+        if (base == (uint64_t)-1) {
+            return (uint64_t)-1;
+        }
+    } else {
+        return (uint64_t)-1;
+    }
+
+    uint64_t new_offset;
+    if (offset < 0) {
+        if (offset == INT64_MIN) {
+            return (uint64_t)-1;
+        }
+        uint64_t delta = (uint64_t)(-offset);
+        if (delta > base) {
+            return (uint64_t)-1;
+        }
+        new_offset = base - delta;
+    } else {
+        uint64_t delta = (uint64_t)offset;
+        if (UINT64_MAX - base < delta) {
+            return (uint64_t)-1;
+        }
+        new_offset = base + delta;
+    }
+
+    file->offset = new_offset;
+    return new_offset;
+}
+
 int scheduler_close_current_file(int fd) {
     if (current_task == NULL || current_task == &boot_task) {
         return -1;
@@ -665,8 +798,8 @@ int scheduler_close_current_file(int fd) {
         return -1;
     }
 
-    console_printf("fd closed: pid=%u fd=%u path=%s\n",
-                   current_task->pid, (uint64_t)fd, open_file->path);
+    log_debug("fd closed: pid=%u fd=%u path=%s\n",
+              current_task->pid, (uint64_t)fd, open_file->path);
     close_current_fd_slot(fd);
     return 0;
 }
@@ -686,7 +819,7 @@ int scheduler_dup2_current_file(int old_fd, int new_fd) {
     int source_index;
     struct task_open_file *source = current_open_file_for_fd(old_fd);
     if (source == NULL && old_fd >= 0 && old_fd <= 2) {
-        source_index = allocate_current_open_file(TASK_FILE_TTY, "/dev/tty");
+        source_index = allocate_current_open_file(TASK_FILE_TTY, "/dev/tty", 0);
         if (source_index < 0) {
             return -1;
         }
@@ -701,18 +834,18 @@ int scheduler_dup2_current_file(int old_fd, int new_fd) {
     current_task->files[new_fd].in_use = 1;
     current_task->files[new_fd].open_file_index = source_index;
     source->ref_count++;
-    console_printf("fd duplicated: pid=%u old=%u new=%u path=%s\n",
-                   current_task->pid, (uint64_t)old_fd, (uint64_t)new_fd,
-                   source->path);
+    log_debug("fd duplicated: pid=%u old=%u new=%u path=%s\n",
+              current_task->pid, (uint64_t)old_fd, (uint64_t)new_fd,
+              source->path);
     return new_fd;
 }
 
 void scheduler_dump_tasks(void) {
-    console_write("task table:\n");
+    log_debug("task table:\n");
     for (uint64_t i = 0; i < task_count; i++) {
         struct task *task = &tasks[i];
-        console_printf("  pid=%u name=%s state=%s cr3=%x brk=%x wake=%u\n",
-                       task->pid, task->name, task_state_name(task->state),
-                       task->cr3, task->brk_current, task->wake_tick);
+        log_debug("  pid=%u name=%s state=%s cr3=%x brk=%x wake=%u\n",
+                  task->pid, task->name, task_state_name(task->state),
+                  task->cr3, task->brk_current, task->wake_tick);
     }
 }

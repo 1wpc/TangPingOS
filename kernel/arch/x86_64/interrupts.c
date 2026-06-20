@@ -1,4 +1,5 @@
 #include <console.h>
+#include <log.h>
 #include <memory.h>
 #include <scheduler.h>
 #include <stddef.h>
@@ -157,7 +158,7 @@ static void gdt_init(void) {
     };
     x86_64_load_gdt(&ptr);
     x86_64_load_tss(GDT_TSS);
-    console_printf("TSS loaded: rsp0=%x\n", tss.rsp0);
+    log_info("TSS loaded: rsp0=%x\n", tss.rsp0);
 }
 
 static void idt_set_gate(uint8_t vector, void (*handler)(void), uint8_t dpl) {
@@ -350,7 +351,7 @@ struct interrupt_frame *x86_64_interrupt_handler(struct interrupt_frame *frame) 
                 keyboard_handle();
                 break;
             default:
-                console_printf("unhandled irq %u\n", (uint64_t)irq);
+                log_warn("unhandled irq %u\n", (uint64_t)irq);
                 break;
         }
 
@@ -363,7 +364,7 @@ struct interrupt_frame *x86_64_interrupt_handler(struct interrupt_frame *frame) 
         return frame;
     }
 
-    console_printf("unexpected interrupt vector %u\n", frame->vector);
+    log_warn("unexpected interrupt vector %u\n", frame->vector);
     return frame;
 }
 
@@ -371,10 +372,10 @@ void x86_64_interrupts_init(void) {
     __asm__ volatile ("cli");
 
     gdt_init();
-    console_write("GDT loaded\n");
+    log_info("GDT loaded\n");
 
     idt_init();
-    console_write("IDT loaded\n");
+    log_info("IDT loaded\n");
 
     pic_remap();
     for (uint8_t irq = 0; irq < 16; irq++) {
@@ -382,15 +383,15 @@ void x86_64_interrupts_init(void) {
     }
     pic_set_mask(0, 0);
     pic_set_mask(1, 0);
-    console_write("PIC remapped: IRQ0 timer, IRQ1 keyboard unmasked\n");
+    log_info("PIC remapped: IRQ0 timer, IRQ1 keyboard unmasked\n");
 
     pit_init(100);
-    console_write("PIT timer configured: 100 Hz\n");
+    log_info("PIT timer configured: 100 Hz\n");
 }
 
 void x86_64_interrupts_enable(void) {
     __asm__ volatile ("sti");
-    console_write("interrupts enabled\n");
+    log_info("interrupts enabled\n");
 }
 
 void x86_64_set_kernel_stack(uint64_t rsp0) {

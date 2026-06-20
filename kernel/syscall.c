@@ -1,9 +1,12 @@
 #include <console.h>
+#include <log.h>
 #include <scheduler.h>
 #include <stdint.h>
+#include <sysinfo.h>
 #include <syscall.h>
 #include <tty.h>
 #include <usercopy.h>
+#include <user.h>
 #include <vfs.h>
 
 #define SYSCALL_WRITE 1
@@ -19,6 +22,14 @@
 #define SYSCALL_GETDENTS 11
 #define SYSCALL_WRITE_FD 12
 #define SYSCALL_DUP2 13
+#define SYSCALL_WRITE_FILE 14
+#define SYSCALL_LSEEK 15
+#define SYSCALL_UNLINK 16
+#define SYSCALL_SPAWN 17
+#define SYSCALL_TASK_INFO 18
+#define SYSCALL_MEMINFO 19
+#define SYSCALL_SYSINFO 20
+#define SYSCALL_UPTIME 21
 #define SYSCALL_WRITE_CHUNK_SIZE 128
 #define SYSCALL_PATH_MAX 128
 #define SYSCALL_READ_CHUNK_SIZE 512
@@ -50,11 +61,31 @@ static uint64_t syscall_write_buffer(const char *buf, uint64_t len) {
 }
 
 static uint64_t syscall_write(uint64_t fd, const char *buf, uint64_t len) {
-    if (!scheduler_current_fd_is_tty((int)fd)) {
+    char chunk[SYSCALL_WRITE_CHUNK_SIZE];
+    uint64_t written = 0;
+
+    if (scheduler_current_fd_is_tty((int)fd)) {
+        return syscall_write_buffer(buf, len);
+    }
+    if (usercopy_validate_range(buf, len, 0) != 0) {
         return (uint64_t)-1;
     }
 
-    return syscall_write_buffer(buf, len);
+    while (written < len) {
+        uint64_t to_copy = min_u64(sizeof(chunk), len - written);
+        if (copy_from_user(chunk, buf + written, to_copy) != 0) {
+            return (uint64_t)-1;
+        }
+
+        uint64_t result = scheduler_write_current_file((int)fd, chunk, to_copy);
+        if (result == (uint64_t)-1 || result != to_copy) {
+            return (uint64_t)-1;
+        }
+
+        written += result;
+    }
+
+    return written;
 }
 
 static uint64_t syscall_read_file(const char *path, uint64_t offset, void *buffer, uint64_t len) {
@@ -81,14 +112,14 @@ static uint64_t syscall_read_file(const char *path, uint64_t offset, void *buffe
     return read;
 }
 
-static uint64_t syscall_open(const char *path) {
+static uint64_t syscall_open(const char *path, uint64_t flags) {
     char kernel_path[SYSCALL_PATH_MAX];
 
     if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
         return (uint64_t)-1;
     }
 
-    return (uint64_t)scheduler_open_current_file(kernel_path);
+    return (uint64_t)scheduler_open_current_file(kernel_path, flags);
 }
 
 static uint64_t syscall_read(uint64_t fd, void *buffer, uint64_t len, int *would_block) {
@@ -152,11 +183,110 @@ static uint64_t syscall_getdents(const char *path, uint64_t index, void *buffer,
     return 1;
 }
 
+static uint64_t syscall_write_file(const char *path, uint64_t offset, const void *buffer, uint64_t len) {
+    char kernel_path[SYSCALL_PATH_MAX];
+    uint8_t kernel_buffer[SYSCALL_READ_CHUNK_SIZE];
+    uint64_t written = 0;
+
+    if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
+        return (uint64_t)-1;
+    }
+    if (usercopy_validate_range(buffer, len, 0) != 0) {
+        return (uint64_t)-1;
+    }
+
+    while (written < len) {
+        uint64_t to_copy = min_u64(sizeof(kernel_buffer), len - written);
+        if (copy_from_user(kernel_buffer, (const uint8_t *)buffer + written, to_copy) != 0) {
+            return (uint64_t)-1;
+        }
+
+        uint64_t result = vfs_write_file(kernel_path, offset + written, kernel_buffer, to_copy);
+        if (result == (uint64_t)-1 || result != to_copy) {
+            return (uint64_t)-1;
+        }
+
+        written += result;
+    }
+
+    return written;
+}
+
+static uint64_t syscall_lseek(uint64_t fd, uint64_t offset, uint64_t whence) {
+    return scheduler_seek_current_file((int)fd, (int64_t)offset, whence);
+}
+
+static uint64_t syscall_unlink(const char *path) {
+    char kernel_path[SYSCALL_PATH_MAX];
+
+    if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return vfs_unlink_file(kernel_path) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t syscall_spawn(const char *path, const char *args) {
+    char kernel_path[SYSCALL_PATH_MAX];
+    char kernel_args[SYSCALL_PATH_MAX];
+
+    if (copy_string_from_user(kernel_path, path, sizeof(kernel_path)) != 0) {
+        return (uint64_t)-1;
+    }
+
+    if (args == 0) {
+        kernel_args[0] = '\0';
+    } else if (copy_string_from_user(kernel_args, args, sizeof(kernel_args)) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return user_spawn_from_vfs_with_args(kernel_path, kernel_args) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t syscall_task_info(uint64_t index, void *buffer, uint64_t len) {
+    struct scheduler_task_info info;
+
+    if (len < sizeof(info) || usercopy_validate_range(buffer, sizeof(info), 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    int result = scheduler_task_info(index, &info);
+    if (result <= 0) {
+        return result == 0 ? 0 : (uint64_t)-1;
+    }
+    if (copy_to_user(buffer, &info, sizeof(info)) != 0) {
+        return (uint64_t)-1;
+    }
+    return 1;
+}
+
+static uint64_t syscall_meminfo(void *buffer, uint64_t len) {
+    struct sys_meminfo info;
+
+    if (len < sizeof(info) || usercopy_validate_range(buffer, sizeof(info), 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    sysinfo_get_meminfo(&info);
+    return copy_to_user(buffer, &info, sizeof(info)) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t syscall_sysinfo(void *buffer, uint64_t len) {
+    struct sys_system_info info;
+
+    if (len < sizeof(info) || usercopy_validate_range(buffer, sizeof(info), 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    sysinfo_get_system_info(&info);
+    return copy_to_user(buffer, &info, sizeof(info)) == 0 ? 0 : (uint64_t)-1;
+}
+
 struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
     static int reported_user_entry;
 
     if (!reported_user_entry) {
-        console_printf("syscall dispatch: cs=%x\n", frame->cs);
+        log_debug("syscall dispatch: cs=%x\n", frame->cs);
         reported_user_entry = 1;
     }
 
@@ -187,7 +317,7 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
             );
             break;
         case SYSCALL_OPEN:
-            frame->rax = syscall_open((const char *)frame->rdi);
+            frame->rax = syscall_open((const char *)frame->rdi, frame->rsi);
             break;
         case SYSCALL_READ:
             {
@@ -218,8 +348,37 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
         case SYSCALL_DUP2:
             frame->rax = scheduler_dup2_current_file((int)frame->rdi, (int)frame->rsi);
             break;
+        case SYSCALL_WRITE_FILE:
+            frame->rax = syscall_write_file(
+                (const char *)frame->rdi,
+                frame->rsi,
+                (const void *)frame->rdx,
+                frame->rcx
+            );
+            break;
+        case SYSCALL_LSEEK:
+            frame->rax = syscall_lseek(frame->rdi, frame->rsi, frame->rdx);
+            break;
+        case SYSCALL_UNLINK:
+            frame->rax = syscall_unlink((const char *)frame->rdi);
+            break;
+        case SYSCALL_SPAWN:
+            frame->rax = syscall_spawn((const char *)frame->rdi, (const char *)frame->rsi);
+            break;
+        case SYSCALL_TASK_INFO:
+            frame->rax = syscall_task_info(frame->rdi, (void *)frame->rsi, frame->rdx);
+            break;
+        case SYSCALL_MEMINFO:
+            frame->rax = syscall_meminfo((void *)frame->rdi, frame->rsi);
+            break;
+        case SYSCALL_SYSINFO:
+            frame->rax = syscall_sysinfo((void *)frame->rdi, frame->rsi);
+            break;
+        case SYSCALL_UPTIME:
+            frame->rax = scheduler_ticks();
+            break;
         default:
-            console_printf("unknown syscall: %u\n", frame->rax);
+            log_warn("unknown syscall: %u\n", frame->rax);
             frame->rax = (uint64_t)-1;
             break;
     }
