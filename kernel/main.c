@@ -1,13 +1,17 @@
+#include <block.h>
 #include <console.h>
 #include <devfs.h>
 #include <initrd.h>
 #include <limine.h>
 #include <memory.h>
+#include <pci.h>
+#include <partition.h>
 #include <ramfs.h>
 #include <scheduler.h>
 #include <sysinfo.h>
 #include <stdint.h>
 #include <user.h>
+#include <virtio_blk.h>
 #include <vfs.h>
 #include <x86_64/arch.h>
 
@@ -106,6 +110,10 @@ void _start(void) {
 
     x86_64_interrupts_init();
     scheduler_init();
+    pci_init();
+    block_init();
+    virtio_blk_init();
+    partition_init();
     vfs_init();
     devfs_init();
     ramfs_init();

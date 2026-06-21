@@ -280,8 +280,9 @@ void initrd_init(struct limine_module_response *modules) {
     }
 
     if (file_count > 0 &&
-        vfs_register_fs_ex("initrd", initrd_read_file, initrd_list_dir, 0,
-                           initrd_file_size, 0, 0, NULL) != 0) {
+        vfs_register_fs_mount("initrd", "/", "limine-initrd",
+                              initrd_read_file, initrd_list_dir, 0,
+                              initrd_file_size, 0, 0, NULL) != 0) {
         log_error("initrd: failed to register VFS backend\n");
     }
 }

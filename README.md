@@ -15,7 +15,10 @@ programs.
 - Loads `init.elf` as the first process, then starts `/bin/shell.elf` from
   initrd.
 - Provides devfs, initrd, writable ramfs, file descriptors, `dup2`, `lseek`,
-  `unlink`, `spawn`, and basic system information syscalls.
+  `unlink`, `spawn`, mount-table queries, and basic system information
+  syscalls.
+- Provides a block-device layer with in-memory `ramblk0`, QEMU virtio-blk
+  `vd0`, and MBR primary partition devices such as `vd0p1`.
 - Includes an interactive shell plus standalone `/bin/hello.elf`,
   `/bin/ls.elf`, and `/bin/cat.elf` user programs.
 
@@ -63,6 +66,7 @@ make ls
 make cat
 make iso
 make clean
+make disk
 make test-exception
 make test-page-fault
 make test-user-fault
@@ -80,6 +84,7 @@ build/ls.elf
 build/cat.elf
 build/initrd.tar
 build/TangPingOS.iso
+build/disk.img
 ```
 
 Current startup chain:

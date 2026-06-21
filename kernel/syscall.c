@@ -1,3 +1,4 @@
+#include <block.h>
 #include <console.h>
 #include <log.h>
 #include <scheduler.h>
@@ -30,9 +31,14 @@
 #define SYSCALL_MEMINFO 19
 #define SYSCALL_SYSINFO 20
 #define SYSCALL_UPTIME 21
+#define SYSCALL_BLOCK_INFO 22
+#define SYSCALL_BLOCK_READ 23
+#define SYSCALL_BLOCK_WRITE 24
+#define SYSCALL_MOUNT_INFO 25
 #define SYSCALL_WRITE_CHUNK_SIZE 128
 #define SYSCALL_PATH_MAX 128
 #define SYSCALL_READ_CHUNK_SIZE 512
+#define SYSCALL_BLOCK_MAX_COUNT 8
 
 static uint64_t min_u64(uint64_t a, uint64_t b) {
     return a < b ? a : b;
@@ -282,6 +288,76 @@ static uint64_t syscall_sysinfo(void *buffer, uint64_t len) {
     return copy_to_user(buffer, &info, sizeof(info)) == 0 ? 0 : (uint64_t)-1;
 }
 
+static uint64_t syscall_block_info(uint64_t index, void *buffer, uint64_t len) {
+    struct block_device_info info;
+
+    if (len < sizeof(info) || usercopy_validate_range(buffer, sizeof(info), 1) != 0) {
+        return (uint64_t)-1;
+    }
+    if (block_get_info(index, &info) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return copy_to_user(buffer, &info, sizeof(info)) == 0 ? 0 : (uint64_t)-1;
+}
+
+static uint64_t syscall_block_read(uint64_t index, uint64_t lba, void *buffer, uint64_t count) {
+    uint8_t sector[512];
+
+    if (count == 0 || count > SYSCALL_BLOCK_MAX_COUNT) {
+        return (uint64_t)-1;
+    }
+    if (usercopy_validate_range(buffer, count * sizeof(sector), 1) != 0) {
+        return (uint64_t)-1;
+    }
+
+    for (uint64_t i = 0; i < count; i++) {
+        if (block_read(index, lba + i, 1, sector) != 0) {
+            return (uint64_t)-1;
+        }
+        if (copy_to_user((uint8_t *)buffer + i * sizeof(sector), sector, sizeof(sector)) != 0) {
+            return (uint64_t)-1;
+        }
+    }
+
+    return count;
+}
+
+static uint64_t syscall_block_write(uint64_t index, uint64_t lba, const void *buffer, uint64_t count) {
+    uint8_t sector[512];
+
+    if (count == 0 || count > SYSCALL_BLOCK_MAX_COUNT) {
+        return (uint64_t)-1;
+    }
+    if (usercopy_validate_range(buffer, count * sizeof(sector), 0) != 0) {
+        return (uint64_t)-1;
+    }
+
+    for (uint64_t i = 0; i < count; i++) {
+        if (copy_from_user(sector, (const uint8_t *)buffer + i * sizeof(sector), sizeof(sector)) != 0) {
+            return (uint64_t)-1;
+        }
+        if (block_write(index, lba + i, 1, sector) != 0) {
+            return (uint64_t)-1;
+        }
+    }
+
+    return count;
+}
+
+static uint64_t syscall_mount_info(uint64_t index, void *buffer, uint64_t len) {
+    struct vfs_mount_info info;
+
+    if (len < sizeof(info) || usercopy_validate_range(buffer, sizeof(info), 1) != 0) {
+        return (uint64_t)-1;
+    }
+    if (vfs_mount_info(index, &info) != 0) {
+        return (uint64_t)-1;
+    }
+
+    return copy_to_user(buffer, &info, sizeof(info)) == 0 ? 0 : (uint64_t)-1;
+}
+
 struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
     static int reported_user_entry;
 
@@ -376,6 +452,18 @@ struct interrupt_frame *syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYSCALL_UPTIME:
             frame->rax = scheduler_ticks();
+            break;
+        case SYSCALL_BLOCK_INFO:
+            frame->rax = syscall_block_info(frame->rdi, (void *)frame->rsi, frame->rdx);
+            break;
+        case SYSCALL_BLOCK_READ:
+            frame->rax = syscall_block_read(frame->rdi, frame->rsi, (void *)frame->rdx, frame->rcx);
+            break;
+        case SYSCALL_BLOCK_WRITE:
+            frame->rax = syscall_block_write(frame->rdi, frame->rsi, (const void *)frame->rdx, frame->rcx);
+            break;
+        case SYSCALL_MOUNT_INFO:
+            frame->rax = syscall_mount_info(frame->rdi, (void *)frame->rsi, frame->rdx);
             break;
         default:
             log_warn("unknown syscall: %u\n", frame->rax);

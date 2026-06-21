@@ -4,11 +4,13 @@
 #include <vfs.h>
 
 #define VFS_MAX_FILESYSTEMS 8
-#define VFS_NAME_MAX 32
 #define VFS_MAX_DIRENTS_PER_FS 64
 
 struct vfs_filesystem {
-    char name[VFS_NAME_MAX];
+    char name[VFS_MOUNT_NAME_MAX];
+    char path[VFS_MOUNT_PATH_MAX];
+    char source[VFS_MOUNT_SOURCE_MAX];
+    uint64_t writable;
     vfs_read_fn read;
     vfs_list_fn list;
     vfs_write_fn write;
@@ -21,15 +23,18 @@ struct vfs_filesystem {
 static struct vfs_filesystem filesystems[VFS_MAX_FILESYSTEMS];
 static uint64_t filesystem_count;
 
-static void copy_name(char *dst, const char *src) {
+static void copy_limited(char *dst, uint64_t dst_len, const char *src) {
     uint64_t i = 0;
 
+    if (dst_len == 0) {
+        return;
+    }
     if (src == 0) {
         dst[0] = '\0';
         return;
     }
 
-    while (i + 1 < VFS_NAME_MAX && src[i] != '\0') {
+    while (i + 1 < dst_len && src[i] != '\0') {
         dst[i] = src[i];
         i++;
     }
@@ -52,12 +57,23 @@ int vfs_register_fs(const char *name, vfs_read_fn read, vfs_list_fn list, vfs_wr
 int vfs_register_fs_ex(const char *name, vfs_read_fn read, vfs_list_fn list, vfs_write_fn write,
                        vfs_size_fn size, vfs_truncate_fn truncate, vfs_unlink_fn unlink,
                        void *context) {
+    return vfs_register_fs_mount(name, "/", name, read, list, write,
+                                 size, truncate, unlink, context);
+}
+
+int vfs_register_fs_mount(const char *name, const char *path, const char *source,
+                          vfs_read_fn read, vfs_list_fn list, vfs_write_fn write,
+                          vfs_size_fn size, vfs_truncate_fn truncate, vfs_unlink_fn unlink,
+                          void *context) {
     if (read == 0 || filesystem_count >= VFS_MAX_FILESYSTEMS) {
         return -1;
     }
 
     struct vfs_filesystem *fs = &filesystems[filesystem_count++];
-    copy_name(fs->name, name);
+    copy_limited(fs->name, sizeof(fs->name), name);
+    copy_limited(fs->path, sizeof(fs->path), path == 0 ? "/" : path);
+    copy_limited(fs->source, sizeof(fs->source), source == 0 ? "" : source);
+    fs->writable = write == 0 ? 0 : 1;
     fs->read = read;
     fs->list = list;
     fs->write = write;
@@ -66,7 +82,24 @@ int vfs_register_fs_ex(const char *name, vfs_read_fn read, vfs_list_fn list, vfs
     fs->unlink = unlink;
     fs->context = context;
 
-    log_info("VFS mounted %s fs: %s\n", write == 0 ? "readonly" : "writable", fs->name);
+    log_info("VFS mounted %s fs: %s at %s source=%s\n",
+             fs->writable == 0 ? "readonly" : "writable",
+             fs->name,
+             fs->path,
+             fs->source);
+    return 0;
+}
+
+int vfs_mount_info(uint64_t index, struct vfs_mount_info *out) {
+    if (out == 0 || index >= filesystem_count) {
+        return -1;
+    }
+
+    struct vfs_filesystem *fs = &filesystems[index];
+    copy_limited(out->name, sizeof(out->name), fs->name);
+    copy_limited(out->path, sizeof(out->path), fs->path);
+    copy_limited(out->source, sizeof(out->source), fs->source);
+    out->writable = fs->writable;
     return 0;
 }
 

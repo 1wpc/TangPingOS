@@ -121,6 +121,57 @@ uint64_t pmm_alloc_page(void) {
     return 0;
 }
 
+uint64_t pmm_alloc_contiguous_pages(uint64_t count) {
+    if (count == 0) {
+        return 0;
+    }
+
+    for (uint64_t start = pmm_next_hint; start + count <= pmm_max_page_index; start++) {
+        int free = 1;
+        for (uint64_t i = 0; i < count; i++) {
+            if (pmm_test_bit(start + i)) {
+                free = 0;
+                start += i;
+                break;
+            }
+        }
+        if (!free) {
+            continue;
+        }
+
+        for (uint64_t i = 0; i < count; i++) {
+            pmm_set_used(start + i);
+            memset_local(phys_to_virt((start + i) * PAGE_SIZE), 0, PAGE_SIZE);
+        }
+        pmm_next_hint = start + count;
+        return start * PAGE_SIZE;
+    }
+
+    for (uint64_t start = 0; start + count <= pmm_next_hint; start++) {
+        int free = 1;
+        for (uint64_t i = 0; i < count; i++) {
+            if (pmm_test_bit(start + i)) {
+                free = 0;
+                start += i;
+                break;
+            }
+        }
+        if (!free) {
+            continue;
+        }
+
+        for (uint64_t i = 0; i < count; i++) {
+            pmm_set_used(start + i);
+            memset_local(phys_to_virt((start + i) * PAGE_SIZE), 0, PAGE_SIZE);
+        }
+        pmm_next_hint = start + count;
+        return start * PAGE_SIZE;
+    }
+
+    kernel_panic("out of contiguous physical pages");
+    return 0;
+}
+
 void pmm_free_page(uint64_t phys_addr) {
     if ((phys_addr % PAGE_SIZE) != 0) {
         kernel_panic("attempted to free unaligned physical page");

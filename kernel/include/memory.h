@@ -15,6 +15,7 @@ void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset);
 void memory_self_test(void);
 void *phys_to_virt(uint64_t phys_addr);
 uint64_t pmm_alloc_page(void);
+uint64_t pmm_alloc_contiguous_pages(uint64_t count);
 void pmm_free_page(uint64_t phys_addr);
 uint64_t pmm_total_pages(void);
 uint64_t pmm_free_pages(void);

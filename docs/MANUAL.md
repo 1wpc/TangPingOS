@@ -59,6 +59,18 @@ Current paths:
 Files created by shell commands live in ramfs. They disappear after reboot
 because TangPingOS does not write to disk yet.
 
+TangPingOS also has a first block-device layer. `ramblk0` is an in-memory
+disk-like device with 64 sectors of 512 bytes each. In QEMU, `make run` also
+creates and attaches `build/disk.img` through virtio-blk; the kernel registers
+that real virtual disk as `vd0` and parses its MBR primary partition as `vd0p1`.
+These devices are useful for sector-level IO testing, but they are not yet
+mounted through VFS.
+
+`mounts` shows the current VFS mount table. Today it is mostly an overlay of
+kernel-backed filesystems at `/`: `devfs`, writable `ramfs`, and readonly
+`initrd`. This table is the place where a future block-backed filesystem such
+as exFAT will appear as a mount like `/usb`.
+
 ## Shell Commands
 
 | Command | Example | Function |
@@ -84,6 +96,10 @@ because TangPingOS does not write to disk yet.
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
 | `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, and memory summary. |
+| `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
+| `lsblk` | `lsblk` | Lists registered block devices. |
+| `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
+| `blkwrite` | `blkwrite 2 2 hello` | Writes text into one 512-byte sector of a writable block device. |
 
 Standalone programs can be launched with `run`:
 
@@ -115,6 +131,10 @@ ps
 mem
 uptime
 sysinfo
+lsblk
+blkread 2 0
+blkwrite 2 2 TangPingOS
+blkread 2 2
 run /bin/ls.elf /bin
 run /bin/cat.elf /hello.txt
 rm note.txt
@@ -189,6 +209,8 @@ struct dirent;
 struct task_info;
 struct meminfo;
 struct system_info;
+struct mount_info;
+struct block_device_info;
 ```
 
 Common helpers:
@@ -230,7 +252,26 @@ uint64_t tpos_task_info(uint64_t index, struct task_info *info);
 uint64_t tpos_meminfo(struct meminfo *info);
 uint64_t tpos_system_info(struct system_info *info);
 uint64_t tpos_uptime(void);
+uint64_t tpos_mount_info(uint64_t index, struct mount_info *info);
 ```
+
+`tpos_mount_info` returns mount entries by numeric index. It currently reports
+the overlay VFS backends at `/`, including their filesystem name, source, and
+writable flag. It returns `-1` when the index is past the end of the table.
+
+Block-device helpers:
+
+```c
+uint64_t tpos_block_info(uint64_t index, struct block_device_info *info);
+uint64_t tpos_block_read(uint64_t index, uint64_t lba, void *buffer, uint64_t count);
+uint64_t tpos_block_write(uint64_t index, uint64_t lba, const void *buffer, uint64_t count);
+```
+
+Current block devices are addressed by numeric index. `ramblk0` is index `0`;
+when QEMU virtio-blk is present, `vd0` is index `1`, and the first MBR primary
+partition `vd0p1` is index `2`. The current shell commands use one-sector
+operations; the syscall ABI already keeps a sector count argument for later
+storage work.
 
 ## Syscall ABI
 
@@ -269,6 +310,10 @@ Current syscall numbers:
 19 meminfo(buf, len)
 20 sysinfo(buf, len)
 21 uptime()
+22 block_info(index, buf, len)
+23 block_read(index, lba, buf, count)
+24 block_write(index, lba, buf, count)
+25 mount_info(index, buf, len)
 ```
 
 Use `tpos.h` wrappers instead of issuing raw syscalls unless you are
@@ -295,6 +340,27 @@ After any test target, rebuild normal output with:
 ```sh
 make clean && make iso
 ```
+
+## QEMU Virtual Disk
+
+`make run` builds `build/disk.img` if needed and attaches it as a legacy
+virtio-blk PCI device. The image contains a simple MBR with one primary
+partition beginning at LBA 2048. The kernel scans PCI config space, initializes
+the virtqueue, registers the disk as `vd0`, parses the MBR, and registers
+`vd0p1`.
+
+Useful checks in the shell:
+
+```text
+mounts
+lsblk
+blkread 2 0
+blkwrite 2 2 hello-from-vd0p1
+blkread 2 2
+```
+
+This is real sector IO to a QEMU disk-image partition, not a filesystem mount.
+The next storage layers are block-backed VFS mounts and eventually exFAT.
 
 ## Real Hardware Boot Notes
 
@@ -333,8 +399,9 @@ Expected constraints on real hardware:
   only redraws dirty rows to the framebuffer. Normal kernel info logs are kept
   on the serial console so they do not overwrite the interactive screen.
 - Secure Boot is not supported.
-- Disk access is not implemented, so the OS only uses the initrd packed into the
-  boot image after startup.
+- Real hardware disk-controller access is not implemented. The current
+  non-memory disk path is QEMU virtio-blk only; the OS still uses the initrd
+  packed into the boot image for startup content.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.
@@ -347,6 +414,10 @@ exact hardware in advance and bring a fallback QEMU demo.
 ## Current Limitations
 
 - No persistent disk filesystem.
+- MBR primary partitions are parsed, but GPT and extended partitions are not.
+- The VFS mount table exists, but there is no mounted block filesystem yet.
+- No real hardware disk-controller driver; QEMU virtio-blk is supported for
+  disk-image sector IO.
 - No USB stack.
 - No full keyboard layout, modifiers, command history, or tab completion.
 - No `wait`, pipes, redirection, signals, or environment variables.

@@ -115,6 +115,22 @@ uint64_t tpos_uptime(void) {
     return tpos_syscall2(SYS_UPTIME, 0, 0);
 }
 
+uint64_t tpos_block_info(uint64_t index, struct block_device_info *info) {
+    return tpos_syscall3(SYS_BLOCK_INFO, index, (uint64_t)info, sizeof(*info));
+}
+
+uint64_t tpos_block_read(uint64_t index, uint64_t lba, void *buffer, uint64_t count) {
+    return tpos_syscall4(SYS_BLOCK_READ, index, lba, (uint64_t)buffer, count);
+}
+
+uint64_t tpos_block_write(uint64_t index, uint64_t lba, const void *buffer, uint64_t count) {
+    return tpos_syscall4(SYS_BLOCK_WRITE, index, lba, (uint64_t)buffer, count);
+}
+
+uint64_t tpos_mount_info(uint64_t index, struct mount_info *info) {
+    return tpos_syscall3(SYS_MOUNT_INFO, index, (uint64_t)info, sizeof(*info));
+}
+
 __attribute__((noreturn))
 void tpos_exit(uint64_t status) {
     tpos_syscall2(SYS_EXIT, status, 0);

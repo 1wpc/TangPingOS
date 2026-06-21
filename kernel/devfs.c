@@ -75,7 +75,8 @@ static int devfs_list(const char *path, uint64_t index, struct vfs_dirent *out, 
 }
 
 void devfs_init(void) {
-    if (vfs_register_readonly_fs("devfs", devfs_read, devfs_list, 0) != 0) {
+    if (vfs_register_fs_mount("devfs", "/", "kernel-devices",
+                              devfs_read, devfs_list, 0, 0, 0, 0, 0) != 0) {
         log_error("devfs: failed to register VFS backend\n");
         return;
     }

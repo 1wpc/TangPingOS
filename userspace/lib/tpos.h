@@ -21,6 +21,10 @@
 #define SYS_MEMINFO 19
 #define SYS_SYSINFO 20
 #define SYS_UPTIME 21
+#define SYS_BLOCK_INFO 22
+#define SYS_BLOCK_READ 23
+#define SYS_BLOCK_WRITE 24
+#define SYS_MOUNT_INFO 25
 
 #define STDIN_FD 0
 #define STDOUT_FD 1
@@ -29,6 +33,10 @@
 #define DIRENT_NAME_MAX 64
 #define TASK_INFO_NAME_MAX 32
 #define SYSINFO_CPU_NAME_MAX 64
+#define BLOCK_DEVICE_NAME_MAX 32
+#define MOUNT_NAME_MAX 32
+#define MOUNT_PATH_MAX 64
+#define MOUNT_SOURCE_MAX 64
 
 #define DIRENT_TYPE_FILE 1
 #define DIRENT_TYPE_DIR 2
@@ -78,6 +86,20 @@ struct system_info {
     char cpu_name[SYSINFO_CPU_NAME_MAX];
 };
 
+struct block_device_info {
+    char name[BLOCK_DEVICE_NAME_MAX];
+    uint64_t block_size;
+    uint64_t block_count;
+    uint64_t writable;
+};
+
+struct mount_info {
+    char name[MOUNT_NAME_MAX];
+    char path[MOUNT_PATH_MAX];
+    char source[MOUNT_SOURCE_MAX];
+    uint64_t writable;
+};
+
 uint64_t tpos_syscall2(uint64_t number, uint64_t arg0, uint64_t arg1);
 uint64_t tpos_syscall3(uint64_t number, uint64_t arg0, uint64_t arg1, uint64_t arg2);
 uint64_t tpos_syscall4(uint64_t number, uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3);
@@ -101,6 +123,10 @@ uint64_t tpos_task_info(uint64_t index, struct task_info *info);
 uint64_t tpos_meminfo(struct meminfo *info);
 uint64_t tpos_system_info(struct system_info *info);
 uint64_t tpos_uptime(void);
+uint64_t tpos_block_info(uint64_t index, struct block_device_info *info);
+uint64_t tpos_block_read(uint64_t index, uint64_t lba, void *buffer, uint64_t count);
+uint64_t tpos_block_write(uint64_t index, uint64_t lba, const void *buffer, uint64_t count);
+uint64_t tpos_mount_info(uint64_t index, struct mount_info *info);
 __attribute__((noreturn)) void tpos_exit(uint64_t status);
 
 uint64_t tpos_strlen(const char *s);

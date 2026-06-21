@@ -20,6 +20,10 @@
 #define sys_meminfo tpos_meminfo
 #define sys_system_info tpos_system_info
 #define sys_uptime tpos_uptime
+#define sys_block_info tpos_block_info
+#define sys_block_read tpos_block_read
+#define sys_block_write tpos_block_write
+#define sys_mount_info tpos_mount_info
 #define sys_sbrk tpos_sbrk
 #define sys_exit tpos_exit
 #define u64_to_decimal tpos_u64_to_decimal
@@ -164,6 +168,26 @@ static const char *find_space(const char *s) {
         s++;
     }
     return s;
+}
+
+static int parse_u64(const char *s, uint64_t *out) {
+    uint64_t value = 0;
+    uint64_t i = 0;
+
+    if (s[0] == '\0') {
+        return -1;
+    }
+
+    while (s[i] != '\0') {
+        if (s[i] < '0' || s[i] > '9') {
+            return -1;
+        }
+        value = value * 10 + (uint64_t)(s[i] - '0');
+        i++;
+    }
+
+    *out = value;
+    return 0;
 }
 
 static uint64_t copy_token(char *dst, uint64_t dst_len, const char *start, const char *end) {
@@ -916,6 +940,114 @@ static void cmd_sysinfo(void) {
     write_literal("\n", 1);
 }
 
+static void write_buffer_hex(const char *buffer, uint64_t len) {
+    uint64_t offset = 0;
+
+    while (offset < len) {
+        uint64_t line_len = len - offset;
+        if (line_len > 16) {
+            line_len = 16;
+        }
+
+        write_u64_hex(offset);
+        write_literal(": ", 2);
+        for (uint64_t i = 0; i < line_len; i++) {
+            write_hex_byte((uint8_t)buffer[offset + i]);
+            write_literal(" ", 1);
+        }
+        write_literal("\n", 1);
+        offset += line_len;
+    }
+}
+
+static void clear_buffer(char *buffer, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) {
+        buffer[i] = 0;
+    }
+}
+
+static void cmd_lsblk(void) {
+    static const char header[] = "id name block_size blocks writable\n";
+    struct block_device_info info;
+
+    write_literal(header, sizeof(header) - 1);
+    for (uint64_t i = 0; i < 8; i++) {
+        uint64_t result = sys_block_info(i, &info);
+        if (result == (uint64_t)-1) {
+            break;
+        }
+
+        write_u64_decimal(i);
+        write_literal(" ", 1);
+        write_cstr_limited(info.name, sizeof(info.name));
+        write_literal(" ", 1);
+        write_u64_decimal(info.block_size);
+        write_literal(" ", 1);
+        write_u64_decimal(info.block_count);
+        write_literal(" ", 1);
+        write_u64_decimal(info.writable);
+        write_literal("\n", 1);
+    }
+}
+
+static void cmd_mounts(void) {
+    static const char header[] = "id path fs source writable\n";
+    struct mount_info info;
+
+    write_literal(header, sizeof(header) - 1);
+    for (uint64_t i = 0; i < 8; i++) {
+        uint64_t result = sys_mount_info(i, &info);
+        if (result == (uint64_t)-1) {
+            break;
+        }
+
+        write_u64_decimal(i);
+        write_literal(" ", 1);
+        write_cstr_limited(info.path, sizeof(info.path));
+        write_literal(" ", 1);
+        write_cstr_limited(info.name, sizeof(info.name));
+        write_literal(" ", 1);
+        write_cstr_limited(info.source, sizeof(info.source));
+        write_literal(" ", 1);
+        write_u64_decimal(info.writable);
+        write_literal("\n", 1);
+    }
+}
+
+static void cmd_blkread(uint64_t device, uint64_t lba, char *buffer, uint64_t buffer_len) {
+    static const char fail[] = "blkread: failed\n";
+
+    if (buffer_len < 512 || sys_block_read(device, lba, buffer, 1) != 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        return;
+    }
+
+    write_buffer_hex(buffer, 512);
+}
+
+static void cmd_blkwrite(uint64_t device, uint64_t lba, const char *text,
+                         char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "blkwrite: ok\n";
+    static const char fail[] = "blkwrite: failed\n";
+    uint64_t text_len = string_length(text);
+
+    if (buffer_len < 512 || text_len >= 512) {
+        write_literal(fail, sizeof(fail) - 1);
+        return;
+    }
+
+    clear_buffer(buffer, 512);
+    for (uint64_t i = 0; i < text_len; i++) {
+        buffer[i] = text[i];
+    }
+
+    if (sys_block_write(device, lba, buffer, 1) == 1) {
+        write_literal(ok, sizeof(ok) - 1);
+    } else {
+        write_literal(fail, sizeof(fail) - 1);
+    }
+}
+
 static void cmd_run(const char *path, const char *args) {
     static const char ok[] = "run: started\n";
     static const char fail[] = "run: failed\n";
@@ -929,8 +1061,10 @@ static void cmd_run(const char *path, const char *args) {
 
 static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_t buffer_len) {
     static const char help[] =
-        "commands: help, pwd, cd, ls, cat, echo, clear, touch, write, append, rm, stat, cp, mv, hexdump, edit, run, ps, mem, uptime, sysinfo\n";
+        "commands: help, pwd, cd, ls, cat, echo, clear, touch, write, append, rm, stat, cp, mv, hexdump, edit, run, ps, mem, uptime, sysinfo, mounts, lsblk, blkread, blkwrite\n";
     static const char unknown[] = "unknown command\n";
+    static const char usage_blkread[] = "usage: blkread device lba\n";
+    static const char usage_blkwrite[] = "usage: blkwrite device lba text\n";
     static const char usage_cat[] = "usage: cat /path\n";
     static const char usage_cp[] = "usage: cp src dst\n";
     static const char usage_edit[] = "usage: edit /path\n";
@@ -987,6 +1121,55 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (strings_equal(line, "sysinfo")) {
         cmd_sysinfo();
+        return;
+    }
+    if (strings_equal(line, "lsblk")) {
+        cmd_lsblk();
+        return;
+    }
+    if (strings_equal(line, "mounts")) {
+        cmd_mounts();
+        return;
+    }
+    if (starts_with(line, "blkread ")) {
+        const char *dev_start = skip_spaces(line + 8);
+        const char *dev_end = find_space(dev_start);
+        const char *lba_start = skip_spaces(dev_end);
+        const char *lba_end = find_space(lba_start);
+        char dev_token[24];
+        char lba_token[24];
+        uint64_t device;
+        uint64_t lba;
+
+        if (dev_start[0] == '\0' || lba_start[0] == '\0' ||
+            copy_token(dev_token, sizeof(dev_token), dev_start, dev_end) == 0 ||
+            copy_token(lba_token, sizeof(lba_token), lba_start, lba_end) == 0 ||
+            parse_u64(dev_token, &device) != 0 || parse_u64(lba_token, &lba) != 0) {
+            write_literal(usage_blkread, sizeof(usage_blkread) - 1);
+            return;
+        }
+        cmd_blkread(device, lba, buffer, buffer_len);
+        return;
+    }
+    if (starts_with(line, "blkwrite ")) {
+        const char *dev_start = skip_spaces(line + 9);
+        const char *dev_end = find_space(dev_start);
+        const char *lba_start = skip_spaces(dev_end);
+        const char *lba_end = find_space(lba_start);
+        const char *text = skip_spaces(lba_end);
+        char dev_token[24];
+        char lba_token[24];
+        uint64_t device;
+        uint64_t lba;
+
+        if (dev_start[0] == '\0' || lba_start[0] == '\0' || text[0] == '\0' ||
+            copy_token(dev_token, sizeof(dev_token), dev_start, dev_end) == 0 ||
+            copy_token(lba_token, sizeof(lba_token), lba_start, lba_end) == 0 ||
+            parse_u64(dev_token, &device) != 0 || parse_u64(lba_token, &lba) != 0) {
+            write_literal(usage_blkwrite, sizeof(usage_blkwrite) - 1);
+            return;
+        }
+        cmd_blkwrite(device, lba, text, buffer, buffer_len);
         return;
     }
     if (starts_with(line, "echo")) {
@@ -1241,6 +1424,7 @@ static void run_shell_script_self_test(char *buffer, uint64_t buffer_len) {
     run_shell_command("mem", cwd, buffer, buffer_len);
     run_shell_command("uptime", cwd, buffer, buffer_len);
     run_shell_command("sysinfo", cwd, buffer, buffer_len);
+    run_shell_command("mounts", cwd, buffer, buffer_len);
 
     run_shell_command("rm script.txt", cwd, buffer, buffer_len);
     run_shell_command("rm empty.txt", cwd, buffer, buffer_len);
@@ -1250,6 +1434,86 @@ static void run_shell_script_self_test(char *buffer, uint64_t buffer_len) {
         sys_open("/moved.txt") != (uint64_t)-1) {
         write_literal(fail, sizeof(fail) - 1);
         sys_exit(20);
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
+static void run_block_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: block device read/write ok\n";
+    static const char fail[] = "shell.elf: block device test failed\n";
+    static const char message[] = "TangPingOS block layer works";
+    struct block_device_info info;
+
+    if (buffer_len < 512 || sys_block_info(0, &info) != 0 ||
+        info.block_size != 512 || info.block_count < 4 || info.writable == 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(21);
+    }
+
+    clear_buffer(buffer, 512);
+    for (uint64_t i = 0; i < sizeof(message) - 1; i++) {
+        buffer[i] = message[i];
+    }
+    if (sys_block_write(0, 3, buffer, 1) != 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(21);
+    }
+
+    clear_buffer(buffer, 512);
+    if (sys_block_read(0, 3, buffer, 1) != 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(21);
+    }
+    for (uint64_t i = 0; i < sizeof(message) - 1; i++) {
+        if (buffer[i] != message[i]) {
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(21);
+        }
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
+static void run_virtio_block_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: MBR partition device read ok\n";
+    static const char fail[] = "shell.elf: virtio block device test failed\n";
+    static const char expected[] = "TangPingOS QEMU partition";
+    struct block_device_info info;
+
+    if (sys_block_info(1, &info) != 0) {
+        return;
+    }
+    if (sys_block_info(2, &info) != 0 || buffer_len < 512 ||
+        sys_block_read(2, 0, buffer, 1) != 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(22);
+    }
+
+    for (uint64_t i = 0; i < sizeof(expected) - 1; i++) {
+        if (buffer[i] != expected[i]) {
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(22);
+        }
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
+static void run_mount_info_self_test(void) {
+    static const char ok[] = "shell.elf: mount table ok\n";
+    static const char fail[] = "shell.elf: mount table failed\n";
+    struct mount_info info;
+
+    if (sys_mount_info(0, &info) != 0 || !strings_equal(info.name, "devfs") ||
+        !strings_equal(info.path, "/") || info.writable != 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(23);
+    }
+    if (sys_mount_info(1, &info) != 0 || !strings_equal(info.name, "ramfs") ||
+        !strings_equal(info.path, "/") || info.writable != 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(23);
     }
 
     write_literal(ok, sizeof(ok) - 1);
@@ -1316,6 +1580,9 @@ void _start(void) {
     run_lseek_self_test(heap, 256);
     run_unlink_self_test();
     run_shell_script_self_test(heap, 256);
+    run_block_self_test(heap, 512);
+    run_virtio_block_self_test(heap, 512);
+    run_mount_info_self_test();
     cmd_ls("/");
     cmd_cat("/ram-note.txt", heap, 256);
     run_dup2_stdin_self_test(heap, 256);

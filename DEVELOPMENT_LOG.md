@@ -37,3 +37,7 @@
 - 2026-06-20: 配置 x86 PAT 并为 framebuffer 建立 write-combining 映射，提升真机上连续像素写入和滚屏性能。
 - 2026-06-20: 为 framebuffer 控制台加入字符缓冲和脏行刷新，TTY 输出改为批量写入，减少滚屏时的整屏像素搬运。
 - 2026-06-20: 将普通内核日志限制在串口输出，避免后台调试信息覆盖真机 framebuffer 上的交互界面。
+- 2026-06-21: 新增块设备抽象、内存块设备 `ramblk0`、块读写 syscall 以及 shell 的 `lsblk/blkread/blkwrite` 扇区级测试命令。
+- 2026-06-21: 新增 PCI 配置空间扫描和 legacy virtio-blk 驱动，`make run` 会挂载 `build/disk.img` 并在系统中注册为 `vd0`。
+- 2026-06-21: 新增 MBR 主分区解析，QEMU 测试磁盘会创建一个分区并在系统中注册为 `vd0p1`。
+- 2026-06-21: 新增 VFS 挂载表元数据、`mount_info` syscall 和 shell `mounts` 命令，为后续块设备文件系统挂载做准备。

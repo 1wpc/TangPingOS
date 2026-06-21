@@ -235,8 +235,9 @@ void ramfs_init(void) {
         files[i].name[0] = '\0';
     }
 
-    if (vfs_register_fs_ex("ramfs", ramfs_read, ramfs_list, ramfs_write,
-                           ramfs_size, ramfs_truncate, ramfs_unlink, 0) != 0) {
+    if (vfs_register_fs_mount("ramfs", "/", "memory",
+                              ramfs_read, ramfs_list, ramfs_write,
+                              ramfs_size, ramfs_truncate, ramfs_unlink, 0) != 0) {
         log_error("ramfs: failed to register VFS backend\n");
         return;
     }

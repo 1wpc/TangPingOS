@@ -10,6 +10,7 @@ LS := $(BUILD_DIR)/ls.elf
 CAT := $(BUILD_DIR)/cat.elf
 INITRD := $(BUILD_DIR)/initrd.tar
 ISO := $(BUILD_DIR)/TangPingOS.iso
+DISK := $(BUILD_DIR)/disk.img
 
 BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
 LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
@@ -126,7 +127,7 @@ CAT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(CAT_SOURCES
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 INITRD_PACKED_PATHS := $(patsubst initrd/%,%,$(INITRD_FILES)) bin/shell.elf bin/hello.elf bin/ls.elf bin/cat.elf
 
-.PHONY: all kernel init shell hello ls cat initrd iso run test-exception test-page-fault test-user-fault test-user-programs clean check-tools check-uefi
+.PHONY: all kernel init shell hello ls cat initrd iso disk run test-exception test-page-fault test-user-fault test-user-programs clean check-tools check-uefi
 
 all: iso
 
@@ -146,7 +147,9 @@ initrd: $(INITRD)
 
 iso: check-tools $(ISO)
 
-run: iso check-uefi
+disk: $(DISK)
+
+run: iso disk check-uefi
 	$(QEMU) \
 		-M q35 \
 		-m 512M \
@@ -154,7 +157,9 @@ run: iso check-uefi
 		-serial stdio \
 		-no-reboot \
 		-no-shutdown \
-		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)
+		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+		-drive file=$(DISK),if=none,id=vd0,format=raw \
+		-device virtio-blk-pci,drive=vd0,disable-modern=on,disable-legacy=off
 
 test-exception:
 	$(MAKE) clean
@@ -244,6 +249,12 @@ $(ISO): $(KERNEL) $(INIT) $(INITRD) boot/limine.conf
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+
+$(DISK): | $(BUILD_DIR)
+	dd if=/dev/zero of=$@ bs=1m count=8
+	printf '\000\000\000\000\203\000\000\000\000\010\000\000\000\070\000\000' | dd of=$@ bs=1 seek=446 conv=notrunc
+	printf '\125\252' | dd of=$@ bs=1 seek=510 conv=notrunc
+	printf 'TangPingOS QEMU partition\n' | dd of=$@ bs=1 seek=1048576 conv=notrunc
 
 check-tools:
 	@command -v $(CC) >/dev/null || { echo "Missing clang. Install with: brew install llvm"; exit 1; }
