@@ -41,3 +41,4 @@
 - 2026-06-21: 新增 PCI 配置空间扫描和 legacy virtio-blk 驱动，`make run` 会挂载 `build/disk.img` 并在系统中注册为 `vd0`。
 - 2026-06-21: 新增 MBR 主分区解析，QEMU 测试磁盘会创建一个分区并在系统中注册为 `vd0p1`。
 - 2026-06-21: 新增 VFS 挂载表元数据、`mount_info` syscall 和 shell `mounts` 命令，为后续块设备文件系统挂载做准备。
+- 2026-06-21: VFS 新增按挂载路径分发和局部路径转换，`devfs` 现在真正挂载在 `/dev`。

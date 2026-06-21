@@ -66,10 +66,10 @@ that real virtual disk as `vd0` and parses its MBR primary partition as `vd0p1`.
 These devices are useful for sector-level IO testing, but they are not yet
 mounted through VFS.
 
-`mounts` shows the current VFS mount table. Today it is mostly an overlay of
-kernel-backed filesystems at `/`: `devfs`, writable `ramfs`, and readonly
-`initrd`. This table is the place where a future block-backed filesystem such
-as exFAT will appear as a mount like `/usb`.
+`mounts` shows the current VFS mount table. Today `/dev` is a real devfs mount,
+while writable `ramfs` and readonly `initrd` are layered at `/`. This table is
+the place where a future block-backed filesystem such as exFAT will appear as a
+mount like `/usb`.
 
 ## Shell Commands
 
@@ -255,9 +255,9 @@ uint64_t tpos_uptime(void);
 uint64_t tpos_mount_info(uint64_t index, struct mount_info *info);
 ```
 
-`tpos_mount_info` returns mount entries by numeric index. It currently reports
-the overlay VFS backends at `/`, including their filesystem name, source, and
-writable flag. It returns `-1` when the index is past the end of the table.
+`tpos_mount_info` returns mount entries by numeric index. It reports each
+mounted filesystem's path, filesystem name, source, and writable flag. It
+returns `-1` when the index is past the end of the table.
 
 Block-device helpers:
 

@@ -1506,7 +1506,7 @@ static void run_mount_info_self_test(void) {
     struct mount_info info;
 
     if (sys_mount_info(0, &info) != 0 || !strings_equal(info.name, "devfs") ||
-        !strings_equal(info.path, "/") || info.writable != 0) {
+        !strings_equal(info.path, "/dev") || info.writable != 0) {
         write_literal(fail, sizeof(fail) - 1);
         sys_exit(23);
     }

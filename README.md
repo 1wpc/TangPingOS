@@ -15,8 +15,8 @@ programs.
 - Loads `init.elf` as the first process, then starts `/bin/shell.elf` from
   initrd.
 - Provides devfs, initrd, writable ramfs, file descriptors, `dup2`, `lseek`,
-  `unlink`, `spawn`, mount-table queries, and basic system information
-  syscalls.
+  `unlink`, `spawn`, path-based VFS mount dispatch, mount-table queries, and
+  basic system information syscalls.
 - Provides a block-device layer with in-memory `ramblk0`, QEMU virtio-blk
   `vd0`, and MBR primary partition devices such as `vd0p1`.
 - Includes an interactive shell plus standalone `/bin/hello.elf`,
