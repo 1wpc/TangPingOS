@@ -65,3 +65,7 @@
 - 2026-06-22: 新增 xHCI PCI 探测与 `usb` 命令，可显示首个 USB 控制器的 PCI/BAR/MMIO 信息。
 - 2026-06-22: 新增 MMIO 映射与 xHCI capability register 读取，`usb` 可显示版本、slots、interrupts 和 ports。
 - 2026-06-22: 新增 xHCI operational register 读取与 QEMU 受控 reset，`usb` 可显示 halt/reset/ready 状态。
+- 2026-06-22: 新增 xHCI extended capabilities 扫描与 BIOS/OS handoff 状态，`usb` 可显示 legacy ownership 结果。
+- 2026-06-22: 新增 xHCI command/event ring、ERST 和 DCBAA 基础配置，`usb` 可显示 ring DMA 地址。
+- 2026-06-22: 新增 xHCI Enable Slot 命令发送与 completion event 轮询，`usb` 可显示 slot id 和 completion code。
+- 2026-06-22: 新增 xHCI root hub port 扫描，`usb` 可显示连接端口、速度和 PORTSC 状态。

@@ -127,7 +127,7 @@ long names or FAT32 writes.
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
 | `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, memory summary, and xHCI count. |
-| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, and operational-register/reset information. |
+| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, operational-register/reset, extended-capability, BIOS/OS handoff, ring setup, first command result, and root-hub port status information. |
 | `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
 | `lsblk` | `lsblk` | Lists registered block devices. |
 | `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
@@ -503,11 +503,17 @@ Expected constraints on real hardware:
   non-memory disk path is QEMU virtio-blk only; the OS still uses the initrd
   packed into the boot image for startup content.
 - The kernel can now detect xHCI USB controllers through PCI, map the first
-  controller's MMIO registers, report capability and operational registers with
-  `usb`, and perform a guarded controller reset on QEMU's xHCI device. On real
-  hardware it currently skips taking ownership/reset until BIOS/OS xHCI handoff
-  is implemented, and it does not yet initialize xHCI rings, enumerate USB
-  devices, or talk to USB storage.
+  controller's MMIO registers, report capability, operational, and extended
+  capability registers with `usb`, and perform BIOS/OS xHCI handoff when a USB
+  Legacy Support capability is present. It still only performs controller reset
+  on QEMU's xHCI device; real hardware reset remains disabled until the full
+  controller initialization path is ready. TangPingOS can now allocate and
+  register the first command ring, event ring, event ring segment table, and
+  device context base address array for QEMU xHCI, then start the controller
+  and issue the first `Enable Slot` command. It can also scan xHCI root-hub
+  `PORTSC` registers to report connected, enabled, powered, and first-port
+  speed/link-state information. It does not yet reset ports, address devices,
+  enumerate USB descriptors, or talk to USB storage.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.
