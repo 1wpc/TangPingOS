@@ -18,7 +18,10 @@ programs.
   `unlink`, `spawn`, path-based VFS mount dispatch, mount-table queries, and
   basic system information syscalls.
 - Provides a block-device layer with in-memory `ramblk0`, QEMU virtio-blk
-  `vd0`, and MBR primary partition devices such as `vd0p1`.
+  `vd0`, MBR primary partition devices such as `vd0p1`, and a readonly
+  block-backed VFS mounted at `/usb` with exFAT boot-sector detection and
+  root-directory, subdirectory, FAT-chain file reads, allocation bitmap parsing,
+  and upcase-table metadata detection.
 - Includes an interactive shell plus standalone `/bin/hello.elf`,
   `/bin/ls.elf`, and `/bin/cat.elf` user programs.
 
@@ -71,6 +74,7 @@ make test-exception
 make test-page-fault
 make test-user-fault
 make test-user-programs
+make test-exfat-commit
 ```
 
 Build outputs:

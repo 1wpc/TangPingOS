@@ -42,3 +42,18 @@
 - 2026-06-21: 新增 MBR 主分区解析，QEMU 测试磁盘会创建一个分区并在系统中注册为 `vd0p1`。
 - 2026-06-21: 新增 VFS 挂载表元数据、`mount_info` syscall 和 shell `mounts` 命令，为后续块设备文件系统挂载做准备。
 - 2026-06-21: VFS 新增按挂载路径分发和局部路径转换，`devfs` 现在真正挂载在 `/dev`。
+- 2026-06-21: 新增只读 `blkfs` 块设备挂载骨架，QEMU 中的 `vd0p1` 会挂到 `/usb` 并暴露测试文件。
+- 2026-06-21: 新增 exFAT boot sector 识别，`/usb/info.txt` 可显示 QEMU 测试分区的 exFAT 基本字段。
+- 2026-06-21: 新增最小 exFAT 根目录解析，`/usb` 可列出并读取 QEMU 测试分区中的 `HELLO.TXT`。
+- 2026-06-21: 新增 exFAT FAT 链读取，`/usb/CHAIN.TXT` 可跨不连续 cluster 读取测试内容。
+- 2026-06-21: 新增 exFAT 根目录链遍历，`/usb/LATE.TXT` 可从后续目录 cluster 中被发现并读取。
+- 2026-06-21: 新增 exFAT 只读子目录解析，`/usb/DIR/INNER.TXT` 可通过子目录路径打开读取。
+- 2026-06-21: 新增 exFAT allocation bitmap 和 upcase table 元数据解析，`/usb/info.txt` 可显示已用 cluster 统计。
+- 2026-06-21: 扩展 exFAT allocation bitmap 统计，`/usb/info.txt` 可显示扫描、已用、空闲和首个空闲 cluster。
+- 2026-06-21: 新增 exFAT 只读分配预演，`/usb/info.txt` 可显示未来写入会选择的空闲 cluster 和 FAT 链计划。
+- 2026-06-21: 新增 exFAT 根目录创建预演，`/usb/info.txt` 可显示 `/NEW.TXT` 目录项会放入的 cluster、sector 和 slot。
+- 2026-06-21: 新增 exFAT 目录项字节编码预演，`/usb/info.txt` 可显示 `/NEW.TXT` 的 `0x85/0xc0/0xc1` entry 十六进制内容。
+- 2026-06-21: 新增 exFAT 写入事务预演汇总，`/usb/info.txt` 可显示 bitmap、FAT 和目录项将修改的 LBA 与偏移。
+- 2026-06-21: 新增 exFAT 写入事务内存补丁校验，`/usb/info.txt` 可显示 dry-run 后的 bitmap、FAT 链和 `/NEW.TXT` 目录元数据。
+- 2026-06-21: 新增受保护的 exFAT 测试提交路径，`make test-exfat-commit` 可在 QEMU 测试盘上写回并读回验证 `/NEW.TXT` 事务。
+- 2026-06-21: 新增 exFAT 测试 VFS 写入路径，`make test-exfat-commit` 可通过 `/usb/NEW.TXT` 写入并读回验证。

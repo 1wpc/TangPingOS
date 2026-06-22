@@ -127,7 +127,7 @@ CAT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(CAT_SOURCES
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 INITRD_PACKED_PATHS := $(patsubst initrd/%,%,$(INITRD_FILES)) bin/shell.elf bin/hello.elf bin/ls.elf bin/cat.elf
 
-.PHONY: all kernel init shell hello ls cat initrd iso disk run test-exception test-page-fault test-user-fault test-user-programs clean check-tools check-uefi
+.PHONY: all kernel init shell hello ls cat initrd iso disk run test-exception test-page-fault test-user-fault test-user-programs test-exfat-commit clean check-tools check-uefi
 
 all: iso
 
@@ -176,6 +176,10 @@ test-user-fault:
 test-user-programs:
 	$(MAKE) clean
 	$(MAKE) iso EXTRA_USER_CFLAGS=-DTANGPINGOS_TEST_USER_PROGRAMS
+
+test-exfat-commit:
+	$(MAKE) clean
+	$(MAKE) iso EXTRA_CFLAGS=-DTANGPINGOS_TEST_EXFAT_COMMIT EXTRA_USER_CFLAGS=-DTANGPINGOS_TEST_EXFAT_COMMIT
 
 $(KERNEL): $(KERNEL_OBJECTS) linker/kernel.ld | $(BUILD_DIR)
 	$(LD) $(LDFLAGS) $(KERNEL_OBJECTS) -o $@
@@ -252,9 +256,44 @@ $(BUILD_DIR):
 
 $(DISK): | $(BUILD_DIR)
 	dd if=/dev/zero of=$@ bs=1m count=8
-	printf '\000\000\000\000\203\000\000\000\000\010\000\000\000\070\000\000' | dd of=$@ bs=1 seek=446 conv=notrunc
+	printf '\000\000\000\000\007\000\000\000\000\010\000\000\000\070\000\000' | dd of=$@ bs=1 seek=446 conv=notrunc
 	printf '\125\252' | dd of=$@ bs=1 seek=510 conv=notrunc
-	printf 'TangPingOS QEMU partition\n' | dd of=$@ bs=1 seek=1048576 conv=notrunc
+	printf '\353\166\220EXFAT   ' | dd of=$@ bs=1 seek=1048576 conv=notrunc
+	printf '\000\010\000\000\000\000\000\000\000\070\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1048640 conv=notrunc
+	printf '\200\000\000\000\100\000\000\000\300\000\000\000\000\004\000\000\002\000\000\000\123\117\120\124\000\001\000\000\011\003\001\200\000' | dd of=$@ bs=1 seek=1048656 conv=notrunc
+	printf '\125\252' | dd of=$@ bs=1 seek=1049086 conv=notrunc
+	printf '\010\000\000\000' | dd of=$@ bs=1 seek=1114120 conv=notrunc
+	printf '\007\000\000\000' | dd of=$@ bs=1 seek=1114128 conv=notrunc
+	printf '\377\377\377\377' | dd of=$@ bs=1 seek=1114136 conv=notrunc
+	printf '\377\377\377\377' | dd of=$@ bs=1 seek=1114140 conv=notrunc
+	printf '\377\377\377\377' | dd of=$@ bs=1 seek=1114144 conv=notrunc
+	printf '\377\377\377\377' | dd of=$@ bs=1 seek=1114152 conv=notrunc
+	printf '\377\377\377\377' | dd of=$@ bs=1 seek=1114156 conv=notrunc
+	printf '\205\002\000\000\040\000' | dd of=$@ bs=1 seek=1146880 conv=notrunc
+	printf '\300\000\000\011\000\000\000\000\034\000\000\000\000\000\000\000\000\000\000\000\003\000\000\000\034\000\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1146912 conv=notrunc
+	printf '\301\000H\000E\000L\000L\000O\000.\000T\000X\000T\000' | dd of=$@ bs=1 seek=1146944 conv=notrunc
+	printf '\205\002\000\000\040\000' | dd of=$@ bs=1 seek=1146976 conv=notrunc
+	printf '\300\000\000\011\000\000\000\000\040\020\000\000\000\000\000\000\000\000\000\000\004\000\000\000\040\020\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1147008 conv=notrunc
+	printf '\301\000C\000H\000A\000I\000N\000.\000T\000X\000T\000' | dd of=$@ bs=1 seek=1147040 conv=notrunc
+	perl -e 'print "\005" x 3904' | dd of=$@ bs=1 seek=1147072 conv=notrunc
+	printf '\205\002\000\000\040\000' | dd of=$@ bs=1 seek=1171456 conv=notrunc
+	printf '\300\000\000\010\000\000\000\000\026\000\000\000\000\000\000\000\000\000\000\000\005\000\000\000\026\000\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1171488 conv=notrunc
+	printf '\301\000L\000A\000T\000E\000.\000T\000X\000T\000' | dd of=$@ bs=1 seek=1171520 conv=notrunc
+	printf '\205\002\000\000\020\000' | dd of=$@ bs=1 seek=1171552 conv=notrunc
+	printf '\300\002\000\003\000\000\000\000\000\020\000\000\000\000\000\000\000\000\000\000\006\000\000\000\000\020\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1171584 conv=notrunc
+	printf '\301\000D\000I\000R\000' | dd of=$@ bs=1 seek=1171616 conv=notrunc
+	printf '\201\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\012\000\000\000\200\000\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1171648 conv=notrunc
+	printf '\202\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\013\000\000\000\040\000\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1171680 conv=notrunc
+	printf '\205\002\000\000\040\000' | dd of=$@ bs=1 seek=1163264 conv=notrunc
+	printf '\300\000\000\011\000\000\000\000\034\000\000\000\000\000\000\000\000\000\000\000\011\000\000\000\034\000\000\000\000\000\000\000' | dd of=$@ bs=1 seek=1163296 conv=notrunc
+	printf '\301\000I\000N\000N\000E\000R\000.\000T\000X\000T\000' | dd of=$@ bs=1 seek=1163328 conv=notrunc
+	printf 'Hello from exFAT root file.\n' | dd of=$@ bs=1 seek=1150976 conv=notrunc
+	perl -e 'print "A" x 4096' | dd of=$@ bs=1 seek=1155072 conv=notrunc
+	printf 'Late root chain file.\n' | dd of=$@ bs=1 seek=1159168 conv=notrunc
+	printf 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' | dd of=$@ bs=1 seek=1167360 conv=notrunc
+	printf 'Hello from an exFAT subdir.\n' | dd of=$@ bs=1 seek=1175552 conv=notrunc
+	printf '\377\003' | dd of=$@ bs=1 seek=1179648 conv=notrunc
+	printf 'TangPingOS exFAT upcase table.' | dd of=$@ bs=1 seek=1183744 conv=notrunc
 
 check-tools:
 	@command -v $(CC) >/dev/null || { echo "Missing clang. Install with: brew install llvm"; exit 1; }

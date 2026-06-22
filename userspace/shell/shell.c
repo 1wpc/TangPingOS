@@ -156,6 +156,26 @@ static int starts_with(const char *s, const char *prefix) {
     return 1;
 }
 
+static int contains_text(const char *s, const char *needle) {
+    uint64_t needle_len = string_length(needle);
+    uint64_t i = 0;
+
+    if (needle_len == 0) {
+        return 1;
+    }
+    while (s[i] != '\0') {
+        uint64_t j = 0;
+        while (needle[j] != '\0' && s[i + j] == needle[j]) {
+            j++;
+        }
+        if (j == needle_len) {
+            return 1;
+        }
+        i++;
+    }
+    return 0;
+}
+
 static const char *skip_spaces(const char *s) {
     while (*s == ' ') {
         s++;
@@ -1476,9 +1496,9 @@ static void run_block_self_test(char *buffer, uint64_t buffer_len) {
 }
 
 static void run_virtio_block_self_test(char *buffer, uint64_t buffer_len) {
-    static const char ok[] = "shell.elf: MBR partition device read ok\n";
+    static const char ok[] = "shell.elf: exFAT boot sector read ok\n";
     static const char fail[] = "shell.elf: virtio block device test failed\n";
-    static const char expected[] = "TangPingOS QEMU partition";
+    static const char expected[] = "EXFAT   ";
     struct block_device_info info;
 
     if (sys_block_info(1, &info) != 0) {
@@ -1491,7 +1511,7 @@ static void run_virtio_block_self_test(char *buffer, uint64_t buffer_len) {
     }
 
     for (uint64_t i = 0; i < sizeof(expected) - 1; i++) {
-        if (buffer[i] != expected[i]) {
+        if (buffer[3 + i] != expected[i]) {
             write_literal(fail, sizeof(fail) - 1);
             sys_exit(22);
         }
@@ -1504,6 +1524,7 @@ static void run_mount_info_self_test(void) {
     static const char ok[] = "shell.elf: mount table ok\n";
     static const char fail[] = "shell.elf: mount table failed\n";
     struct mount_info info;
+    struct block_device_info block;
 
     if (sys_mount_info(0, &info) != 0 || !strings_equal(info.name, "devfs") ||
         !strings_equal(info.path, "/dev") || info.writable != 0) {
@@ -1515,9 +1536,430 @@ static void run_mount_info_self_test(void) {
         write_literal(fail, sizeof(fail) - 1);
         sys_exit(23);
     }
+    if (sys_block_info(2, &block) == 0 &&
+        (sys_mount_info(3, &info) != 0 || !strings_equal(info.name, "blkfs") ||
+         !strings_equal(info.path, "/usb") || !strings_equal(info.source, block.name))) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(23);
+    }
 
     write_literal(ok, sizeof(ok) - 1);
 }
+
+static void run_block_mount_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: block mount read ok\n";
+    static const char fail[] = "shell.elf: block mount read failed\n";
+    static const char info_prefix[] = "TangPingOS block-backed mount";
+    static const char info_fs[] = "detected_fs: exfat";
+    static const char info_bitmap[] = "allocation_bitmap: present";
+    static const char info_bitmap_scanned[] = "bitmap_scanned_clusters: 1024";
+    static const char info_bitmap_used[] = "bitmap_used_clusters: 10";
+    static const char info_bitmap_free[] = "bitmap_free_clusters: 1014";
+    static const char info_bitmap_first_free[] = "bitmap_first_free_cluster: 12";
+    static const char info_plan_ready[] = "allocation_plan_ready: 1";
+    static const char info_plan_clusters[] = "allocation_plan_clusters: 12 13 14";
+    static const char info_plan_chain[] = "allocation_plan_fat_chain: 12->13->14->EOF";
+    static const char info_dir_plan_path[] = "directory_plan_path: /NEW.TXT";
+    static const char info_dir_plan_entries[] = "directory_plan_required_entries: 3";
+    static const char info_dir_plan_ready[] = "directory_plan_ready: 1";
+    static const char info_dir_plan_cluster[] = "directory_plan_cluster: 2";
+    static const char info_dir_plan_slot[] = "directory_plan_first_slot: 6";
+    static const char info_dir_plan_lba[] = "directory_plan_entry_lba: 192";
+    static const char info_dir_entry_ready[] = "directory_entry_plan_ready: 1";
+    static const char info_dir_entry_cluster[] = "directory_entry_plan_first_cluster: 12";
+    static const char info_dir_entry_size[] = "directory_entry_plan_file_size: 12288";
+    static const char info_dir_entry0[] = "directory_entry0_hex: 8502";
+    static const char info_dir_entry1[] = "directory_entry1_hex: c0000007";
+    static const char info_dir_entry2[] = "directory_entry2_hex: c1004e00450057002e00540058005400";
+    static const char info_tx_ready[] = "transaction_plan_ready: 1";
+    static const char info_tx_writes[] = "transaction_plan_write_count: 3";
+    static const char info_tx_bitmap_lba[] = "transaction_bitmap_lba: 256";
+    static const char info_tx_bitmap_offset[] = "transaction_bitmap_byte_offset: 1";
+    static const char info_tx_bitmap_old[] = "transaction_bitmap_old_hex: 03";
+    static const char info_tx_bitmap_new[] = "transaction_bitmap_new_hex: 1f";
+    static const char info_tx_fat_lba[] = "transaction_fat_lba: 128";
+    static const char info_tx_fat_plan[] = "transaction_fat_plan: 12@48:0->13 13@52:0->14 14@56:0->EOF";
+    static const char info_tx_dir_lba[] = "transaction_directory_lba: 192";
+    static const char info_tx_dir_offset[] = "transaction_directory_byte_offset: 192";
+    static const char info_tx_dir_count[] = "transaction_directory_byte_count: 96";
+    static const char info_patch_ready[] = "patched_transaction_ready: 1";
+    static const char info_patch_bitmap[] = "patched_bitmap_value_hex: 1f";
+    static const char info_patch_fat[] = "patched_fat_chain: 12->13->14->EOF";
+    static const char info_patch_checksum[] = "patched_directory_checksum: 58755";
+    static const char info_patch_cluster[] = "patched_directory_first_cluster: 12";
+    static const char info_patch_size[] = "patched_directory_file_size: 12288";
+    static const char info_patch_name_len[] = "patched_directory_name_length: 7";
+    static const char info_patch_name_matches[] = "patched_directory_name_matches: 1";
+#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
+    static const char info_commit_supported[] = "commit_supported: 1";
+    static const char info_commit_attempted[] = "commit_attempted: 1";
+    static const char info_commit_ready[] = "commit_ready: 1";
+    static const char info_commit_writes[] = "commit_write_count: 3";
+    static const char info_commit_verified[] = "commit_verified: 1";
+#else
+    static const char info_commit_supported[] = "commit_supported: 0";
+    static const char info_commit_attempted[] = "commit_attempted: 0";
+    static const char info_commit_ready[] = "commit_ready: 0";
+    static const char info_commit_writes[] = "commit_write_count: 0";
+    static const char info_commit_verified[] = "commit_verified: 0";
+#endif
+    static const char sector_signature[] = "EXFAT   ";
+    static const char exfat_file_name[] = "HELLO.TXT";
+    static const char exfat_file_content[] = "Hello from exFAT root file.\n";
+    static const char exfat_chain_name[] = "CHAIN.TXT";
+    static const char exfat_chain_tail[] = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+    static const char exfat_late_name[] = "LATE.TXT";
+    static const char exfat_late_content[] = "Late root chain file.\n";
+    static const char exfat_dir_name[] = "DIR";
+    static const char exfat_inner_name[] = "INNER.TXT";
+    static const char exfat_inner_content[] = "Hello from an exFAT subdir.\n";
+    struct block_device_info block;
+    struct dirent dirent;
+
+    if (sys_block_info(2, &block) != 0) {
+        return;
+    }
+    if (buffer_len < 512) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    uint64_t fd = sys_open("/usb/info.txt");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    uint64_t read_len = 0;
+    while (read_len + 1 < buffer_len) {
+        uint64_t chunk = sys_read(fd, buffer + read_len, buffer_len - 1 - read_len);
+        if (chunk == (uint64_t)-1) {
+            sys_close(fd);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(24);
+        }
+        if (chunk == 0) {
+            break;
+        }
+        read_len += chunk;
+    }
+    sys_close(fd);
+    if (read_len == 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    buffer[read_len] = '\0';
+    if (!starts_with(buffer, info_prefix)) {
+        write_literal("block mount step: info prefix\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_fs)) {
+        write_literal("block mount step: info fs\n", 26);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_bitmap) ||
+        !contains_text(buffer, info_bitmap_scanned) ||
+        !contains_text(buffer, info_bitmap_used) ||
+        !contains_text(buffer, info_bitmap_free) ||
+        !contains_text(buffer, info_bitmap_first_free)) {
+        write_literal("block mount step: bitmap info\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_plan_ready)) {
+        write_literal("block mount step: allocation plan ready\n", 40);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_plan_clusters)) {
+        write_literal("block mount step: allocation plan clusters\n", 43);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_plan_chain)) {
+        write_literal("block mount step: allocation plan chain\n", 40);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_dir_plan_path) ||
+        !contains_text(buffer, info_dir_plan_entries) ||
+        !contains_text(buffer, info_dir_plan_ready) ||
+        !contains_text(buffer, info_dir_plan_cluster) ||
+        !contains_text(buffer, info_dir_plan_slot) ||
+        !contains_text(buffer, info_dir_plan_lba)) {
+        write_literal("block mount step: directory plan\n", 33);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_dir_entry_ready) ||
+        !contains_text(buffer, info_dir_entry_cluster) ||
+        !contains_text(buffer, info_dir_entry_size) ||
+        !contains_text(buffer, info_dir_entry0) ||
+        !contains_text(buffer, info_dir_entry1) ||
+        !contains_text(buffer, info_dir_entry2)) {
+        write_literal("block mount step: directory entry plan\n", 39);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_tx_ready) ||
+        !contains_text(buffer, info_tx_writes) ||
+        !contains_text(buffer, info_tx_bitmap_lba) ||
+        !contains_text(buffer, info_tx_bitmap_offset) ||
+        !contains_text(buffer, info_tx_bitmap_old) ||
+        !contains_text(buffer, info_tx_bitmap_new) ||
+        !contains_text(buffer, info_tx_fat_lba) ||
+        !contains_text(buffer, info_tx_fat_plan) ||
+        !contains_text(buffer, info_tx_dir_lba) ||
+        !contains_text(buffer, info_tx_dir_offset) ||
+        !contains_text(buffer, info_tx_dir_count)) {
+        write_literal("block mount step: transaction plan\n", 36);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_patch_ready) ||
+        !contains_text(buffer, info_patch_bitmap) ||
+        !contains_text(buffer, info_patch_fat) ||
+        !contains_text(buffer, info_patch_checksum) ||
+        !contains_text(buffer, info_patch_cluster) ||
+        !contains_text(buffer, info_patch_size) ||
+        !contains_text(buffer, info_patch_name_len) ||
+        !contains_text(buffer, info_patch_name_matches)) {
+        write_literal("block mount step: transaction dry-run\n", 38);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (!contains_text(buffer, info_commit_supported) ||
+        !contains_text(buffer, info_commit_attempted) ||
+        !contains_text(buffer, info_commit_ready) ||
+        !contains_text(buffer, info_commit_writes) ||
+        !contains_text(buffer, info_commit_verified)) {
+        write_literal("block mount step: transaction commit gate\n", 41);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    fd = sys_open("/usb/sector0.bin");
+    if (fd == (uint64_t)-1) {
+        write_literal("block mount step: sector open\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, 512);
+    sys_close(fd);
+    if (read_len != 512) {
+        write_literal("block mount step: sector read\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    for (uint64_t i = 0; i < sizeof(sector_signature) - 1; i++) {
+        if (buffer[3 + i] != sector_signature[i]) {
+            write_literal("block mount step: sector signature\n", 35);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(24);
+        }
+    }
+
+    if ((uint8_t)buffer[510] != 0x55 || (uint8_t)buffer[511] != 0xaa) {
+        write_literal("block mount step: sector magic\n", 31);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    int found_exfat_file = 0;
+    int found_chain_file = 0;
+    int found_late_file = 0;
+    int found_dir = 0;
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t result = sys_getdents("/usb", i, &dirent);
+        if (result == 0) {
+            break;
+        }
+        if (result == (uint64_t)-1) {
+            write_literal("block mount step: root list\n", 29);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(24);
+        }
+        if (strings_equal(dirent.name, exfat_file_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(exfat_file_content) - 1) {
+            found_exfat_file = 1;
+        }
+        if (strings_equal(dirent.name, exfat_chain_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == 4096 + sizeof(exfat_chain_tail) - 1) {
+            found_chain_file = 1;
+        }
+        if (strings_equal(dirent.name, exfat_late_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(exfat_late_content) - 1) {
+            found_late_file = 1;
+        }
+        if (strings_equal(dirent.name, exfat_dir_name) &&
+            dirent.type == DIRENT_TYPE_DIR) {
+            found_dir = 1;
+        }
+    }
+    if (!found_exfat_file || !found_chain_file || !found_late_file || !found_dir) {
+        write_literal("block mount step: root entries\n", 32);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    fd = sys_open("/usb/HELLO.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal("block mount step: hello open\n", 29);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(exfat_file_content) - 1) {
+        write_literal("block mount step: hello read\n", 29);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, exfat_file_content)) {
+        write_literal("block mount step: hello content\n", 32);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    fd = sys_open("/usb/CHAIN.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal("block mount step: chain open\n", 29);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, 1);
+    if (read_len != 1 || buffer[0] != 'A') {
+        sys_close(fd);
+        write_literal("block mount step: chain head\n", 29);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    if (sys_lseek(fd, 4096, SEEK_SET) != 4096) {
+        sys_close(fd);
+        write_literal("block mount step: chain seek\n", 29);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, sizeof(exfat_chain_tail) - 1);
+    sys_close(fd);
+    if (read_len != sizeof(exfat_chain_tail) - 1) {
+        write_literal("block mount step: chain tail read\n", 34);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, exfat_chain_tail)) {
+        write_literal("block mount step: chain tail content\n", 37);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    fd = sys_open("/usb/LATE.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal("block mount step: late open\n", 28);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(exfat_late_content) - 1) {
+        write_literal("block mount step: late read\n", 28);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, exfat_late_content)) {
+        write_literal("block mount step: late content\n", 31);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    int found_inner_file = 0;
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t result = sys_getdents("/usb/DIR", i, &dirent);
+        if (result == 0) {
+            break;
+        }
+        if (result == (uint64_t)-1) {
+            write_literal("block mount step: inner list\n", 30);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(24);
+        }
+        if (strings_equal(dirent.name, exfat_inner_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(exfat_inner_content) - 1) {
+            found_inner_file = 1;
+        }
+    }
+    if (!found_inner_file) {
+        write_literal("block mount step: inner entry\n", 31);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    fd = sys_open("/usb/DIR/INNER.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal("block mount step: inner open\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(exfat_inner_content) - 1) {
+        write_literal("block mount step: inner read\n", 30);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, exfat_inner_content)) {
+        write_literal("block mount step: inner content\n", 33);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(24);
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
+#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
+static void run_exfat_vfs_write_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: exFAT VFS write ok\n";
+    static const char fail[] = "shell.elf: exFAT VFS write failed\n";
+    static const char path[] = "/usb/NEW.TXT";
+    static const char content[] = "TangPingOS wrote this through VFS.\n";
+    uint64_t len = sizeof(content) - 1;
+    uint64_t fd;
+    uint64_t read_len;
+
+    if (buffer_len < len + 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(26);
+    }
+    if (write_file_text(path, content, OPEN_CREATE | OPEN_TRUNC) != 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(26);
+    }
+
+    fd = sys_open(path);
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(26);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    buffer[read_len < buffer_len ? read_len : buffer_len - 1] = '\0';
+    if (read_len != len || !strings_equal(buffer, content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(26);
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+#endif
 
 __attribute__((noreturn))
 static void run_interactive_shell(uint64_t input_fd, char *buffer, uint64_t buffer_len) {
@@ -1565,7 +2007,7 @@ void _start(void) {
     write_u64_hex(sys_brk(0));
     write_literal(newline, sizeof(newline) - 1);
 
-    char *heap = sys_sbrk(512);
+    char *heap = sys_sbrk(8192);
     if (heap == (void *)0) {
         write_literal(heap_fail, sizeof(heap_fail) - 1);
         sys_exit(8);
@@ -1583,6 +2025,10 @@ void _start(void) {
     run_block_self_test(heap, 512);
     run_virtio_block_self_test(heap, 512);
     run_mount_info_self_test();
+    run_block_mount_self_test(heap, 8192);
+#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
+    run_exfat_vfs_write_self_test(heap, 8192);
+#endif
     cmd_ls("/");
     cmd_cat("/ram-note.txt", heap, 256);
     run_dup2_stdin_self_test(heap, 256);

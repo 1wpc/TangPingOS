@@ -1,4 +1,5 @@
 #include <block.h>
+#include <blockfs.h>
 #include <console.h>
 #include <devfs.h>
 #include <initrd.h>
@@ -118,6 +119,9 @@ void _start(void) {
     devfs_init();
     ramfs_init();
     initrd_init(module_request.response);
+    if (blockfs_mount(2, "/usb") != 0) {
+        console_write("[warn] /usb block mount unavailable\n");
+    }
     user_init_from_modules(module_request.response);
     scheduler_dump_tasks();
     x86_64_interrupts_enable();

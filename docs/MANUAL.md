@@ -63,13 +63,38 @@ TangPingOS also has a first block-device layer. `ramblk0` is an in-memory
 disk-like device with 64 sectors of 512 bytes each. In QEMU, `make run` also
 creates and attaches `build/disk.img` through virtio-blk; the kernel registers
 that real virtual disk as `vd0` and parses its MBR primary partition as `vd0p1`.
-These devices are useful for sector-level IO testing, but they are not yet
-mounted through VFS.
+The first partition is also mounted through a small readonly block-backed VFS
+skeleton at `/usb`. The QEMU test partition contains a minimal exFAT-shaped
+boot sector and a tiny root directory sample so the kernel can validate exFAT
+detection, root-directory chain parsing, subdirectory parsing, and FAT-chain
+file reads. It also contains exFAT allocation-bitmap and upcase-table metadata
+entries so the kernel can start validating free-space information before any
+future write support.
 
 `mounts` shows the current VFS mount table. Today `/dev` is a real devfs mount,
-while writable `ramfs` and readonly `initrd` are layered at `/`. This table is
-the place where a future block-backed filesystem such as exFAT will appear as a
-mount like `/usb`.
+`/usb` is a real block-device-backed mount when QEMU provides `vd0p1`, and
+writable `ramfs` plus readonly `initrd` are layered at `/`. The current `/usb`
+backend is not a full exFAT filesystem yet; it exposes test files, parsed
+exFAT boot-sector metadata, and readonly root-directory files whose data can
+span a FAT chain. The root directory itself can also span a FAT chain, and
+simple readonly subdirectories are supported. The mount also parses the exFAT
+allocation bitmap and reports scanned, used, free, and first-free cluster
+counts in `/usb/info.txt`. It can also build a dry-run allocation plan for a
+small future write, showing which free clusters would be reserved and how their
+FAT chain would be linked. This plan is informational only; TangPingOS still
+does not modify the exFAT partition. The mount also dry-runs the directory
+entry side of creating `/NEW.TXT`, reporting the root-directory cluster, sector,
+slot, and LBA where the three required exFAT entries would fit. It additionally
+encodes those planned `0x85`, `0xc0`, and `0xc1` directory entries as hex so the
+future write path can be checked before any sector is modified. Finally, it
+summarizes the whole dry-run write transaction: the allocation-bitmap byte, FAT
+entries, and directory-entry byte range that would be modified. The same
+transaction is also applied to in-memory sector copies and checked back as a
+dry-run patch, so the kernel can verify the resulting bitmap byte, FAT chain,
+and `/NEW.TXT` directory metadata before normal real writes exist. A guarded
+test build can additionally commit those three sector updates to the QEMU
+`disk.img` and read them back for verification; normal builds keep `/usb`
+readonly.
 
 ## Shell Commands
 
@@ -100,6 +125,17 @@ mount like `/usb`.
 | `lsblk` | `lsblk` | Lists registered block devices. |
 | `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
 | `blkwrite` | `blkwrite 2 2 hello` | Writes text into one 512-byte sector of a writable block device. |
+
+When QEMU provides the test disk, `/usb` contains:
+
+| Path | Function |
+| --- | --- |
+| `/usb/info.txt` | Text metadata for the block-backed mount, source device, exFAT boot sector, allocation bitmap/free-space summary, and upcase table when detected. |
+| `/usb/sector0.bin` | Raw bytes from LBA 0 of the mounted block device; in QEMU this starts with an exFAT boot sector. |
+| `/usb/HELLO.TXT` | Parsed from the QEMU test partition's exFAT root directory and readable as a small first-cluster file. |
+| `/usb/CHAIN.TXT` | Parsed from the QEMU test partition and readable through a two-cluster FAT chain. |
+| `/usb/LATE.TXT` | Parsed from a later root-directory cluster, proving that the root directory chain is followed. |
+| `/usb/DIR/INNER.TXT` | Parsed from a readonly exFAT subdirectory. |
 
 Standalone programs can be launched with `run`:
 
@@ -326,6 +362,7 @@ make test-exception
 make test-page-fault
 make test-user-fault
 make test-user-programs
+make test-exfat-commit
 ```
 
 - `test-exception` builds a kernel that triggers an invalid-opcode exception.
@@ -334,6 +371,10 @@ make test-user-programs
   null write; the kernel should kill only that process.
 - `test-user-programs` makes the shell startup self-test spawn `/bin/ls.elf`
   and `/bin/cat.elf`.
+- `test-exfat-commit` enables the guarded exFAT transaction commit path for the
+  QEMU test disk only; it writes the planned `/NEW.TXT` bitmap, FAT, and
+  directory sectors, reads them back to verify the commit, and then lets the
+  shell write `/usb/NEW.TXT` through the normal VFS file API and read it back.
 
 After any test target, rebuild normal output with:
 
@@ -345,22 +386,48 @@ make clean && make iso
 
 `make run` builds `build/disk.img` if needed and attaches it as a legacy
 virtio-blk PCI device. The image contains a simple MBR with one primary
-partition beginning at LBA 2048. The kernel scans PCI config space, initializes
-the virtqueue, registers the disk as `vd0`, parses the MBR, and registers
-`vd0p1`.
+partition beginning at LBA 2048. That partition has a minimal exFAT-shaped boot
+sector plus root-directory entries for `HELLO.TXT`, `CHAIN.TXT`, `LATE.TXT`,
+and `DIR` for parser testing. `CHAIN.TXT` deliberately uses a two-cluster FAT
+chain, `LATE.TXT` deliberately lives in a later root-directory cluster, and
+`DIR/INNER.TXT` tests subdirectory parsing. The kernel scans PCI config space,
+initializes the virtqueue, registers the disk as `vd0`, parses the MBR, and
+registers `vd0p1`.
 
 Useful checks in the shell:
 
 ```text
 mounts
+ls /usb
+cat /usb/info.txt
+cat /usb/HELLO.TXT
+stat /usb/CHAIN.TXT
+cat /usb/LATE.TXT
+ls /usb/DIR
+cat /usb/DIR/INNER.TXT
+hexdump /usb/sector0.bin
 lsblk
 blkread 2 0
 blkwrite 2 2 hello-from-vd0p1
 blkread 2 2
 ```
 
-This is real sector IO to a QEMU disk-image partition, not a filesystem mount.
-The next storage layers are block-backed VFS mounts and eventually exFAT.
+This is real sector IO to a QEMU disk-image partition. `/usb` is now a mounted
+block-device VFS that can identify an exFAT boot sector, list root-directory
+entries across the root-directory FAT chain, and read files by following their
+FAT cluster chain. It also supports simple readonly subdirectories and parses
+the exFAT allocation bitmap well enough to count used/free clusters, find the
+first free cluster, and produce a dry-run allocation plan such as
+`12->13->14->EOF`. It can also dry-run the directory-entry placement for a new
+root file such as `/NEW.TXT` and show the encoded directory-entry bytes. It
+also summarizes the transaction as bitmap, FAT, and directory sector updates,
+then applies those updates to in-memory sector copies to verify the resulting
+bitmap, FAT chain, and directory metadata. The developer-only
+`make test-exfat-commit` target enables a guarded QEMU test commit that writes
+those three sectors to `build/disk.img` and verifies them by reading the sectors
+back. In that same test build, the shell also opens `/usb/NEW.TXT` through VFS,
+writes text to it, and reads the exact bytes back. Normal builds still do not
+support exFAT writes.
 
 ## Real Hardware Boot Notes
 
@@ -415,7 +482,13 @@ exact hardware in advance and bring a fallback QEMU demo.
 
 - No persistent disk filesystem.
 - MBR primary partitions are parsed, but GPT and extended partitions are not.
-- The VFS mount table exists, but there is no mounted block filesystem yet.
+- `/usb` is a readonly block-backed VFS with minimal exFAT boot-sector,
+  allocation-bitmap, dry-run allocation planning, directory-entry byte
+  encoding, dry-run transaction summaries, in-memory transaction patch
+  validation, upcase-table, root-directory chain, subdirectory, and FAT-chain
+  parsing, not a complete exFAT filesystem. The `make test-exfat-commit`
+  build can commit one fixed `/NEW.TXT` transaction to the QEMU test disk only;
+  this is not general-purpose exFAT write support.
 - No real hardware disk-controller driver; QEMU virtio-blk is supported for
   disk-image sector IO.
 - No USB stack.
