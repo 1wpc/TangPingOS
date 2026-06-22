@@ -7,6 +7,7 @@
 #define BLOCKFS_MAX_MOUNTS 4
 #define BLOCKFS_INFO_MAX 8192
 #define BLOCKFS_MAX_EXFAT_ROOT_ENTRIES 32
+#define BLOCKFS_MAX_ROOT_ENTRIES BLOCKFS_MAX_EXFAT_ROOT_ENTRIES
 #define EXFAT_ENTRY_SIZE 32
 #define EXFAT_ALLOC_PLAN_CLUSTER_COUNT 3
 #define EXFAT_CREATE_PLAN_NAME "NEW.TXT"
@@ -101,13 +102,39 @@ struct exfat_root_entry {
     int is_dir;
 };
 
+struct fat32_boot_info {
+    int present;
+    uint16_t bytes_per_sector;
+    uint8_t sectors_per_cluster;
+    uint16_t reserved_sectors;
+    uint8_t number_of_fats;
+    uint32_t total_sectors;
+    uint32_t fat_size_sectors;
+    uint32_t root_dir_cluster;
+    uint16_t fsinfo_sector;
+    uint16_t backup_boot_sector;
+    uint32_t hidden_sectors;
+    uint32_t volume_id;
+    char volume_label[12];
+};
+
+struct fat32_lfn_state {
+    char name[VFS_DIRENT_NAME_MAX];
+    uint8_t checksum;
+    uint8_t total_entries;
+    uint8_t seen_entries;
+    int present;
+    int valid;
+};
+
 struct blockfs_mount {
     int in_use;
     uint64_t block_index;
     struct block_device_info block;
     char source[VFS_MOUNT_SOURCE_MAX];
     struct exfat_boot_info exfat;
-    struct exfat_root_entry root_entries[BLOCKFS_MAX_EXFAT_ROOT_ENTRIES];
+    struct fat32_boot_info fat32;
+    struct exfat_root_entry root_entries[BLOCKFS_MAX_ROOT_ENTRIES];
     uint64_t root_entry_count;
 };
 
@@ -211,6 +238,22 @@ static int bytes_equal(const uint8_t *data, const char *text, uint64_t len) {
     return 1;
 }
 
+static void copy_padded_text(char *dst, uint64_t dst_len, const uint8_t *src, uint64_t src_len) {
+    uint64_t out = 0;
+
+    if (dst_len == 0) {
+        return;
+    }
+    while (src_len > 0 && src[src_len - 1] == ' ') {
+        src_len--;
+    }
+    while (out + 1 < dst_len && out < src_len) {
+        dst[out] = (char)src[out];
+        out++;
+    }
+    dst[out] = '\0';
+}
+
 static void parse_exfat_boot_sector(struct blockfs_mount *mount, const uint8_t *sector) {
     zero_bytes(&mount->exfat, sizeof(mount->exfat));
 
@@ -235,6 +278,64 @@ static void parse_exfat_boot_sector(struct blockfs_mount *mount, const uint8_t *
     mount->exfat.number_of_fats = sector[110];
     mount->exfat.drive_select = sector[111];
     mount->exfat.percent_in_use = sector[112];
+}
+
+static void parse_fat32_boot_sector(struct blockfs_mount *mount, const uint8_t *sector) {
+    uint16_t bytes_per_sector;
+    uint8_t sectors_per_cluster;
+    uint16_t reserved_sectors;
+    uint8_t number_of_fats;
+    uint16_t root_entry_count;
+    uint16_t total_sectors_16;
+    uint16_t fat_size_16;
+    uint32_t total_sectors_32;
+    uint32_t fat_size_32;
+    uint32_t root_dir_cluster;
+
+    zero_bytes(&mount->fat32, sizeof(mount->fat32));
+    if (!bytes_equal(sector + 82, "FAT32   ", 8) ||
+        sector[510] != 0x55 || sector[511] != 0xaa) {
+        return;
+    }
+
+    bytes_per_sector = read_le16(sector + 11);
+    sectors_per_cluster = sector[13];
+    reserved_sectors = read_le16(sector + 14);
+    number_of_fats = sector[16];
+    root_entry_count = read_le16(sector + 17);
+    total_sectors_16 = read_le16(sector + 19);
+    fat_size_16 = read_le16(sector + 22);
+    total_sectors_32 = read_le32(sector + 32);
+    fat_size_32 = read_le32(sector + 36);
+    root_dir_cluster = read_le32(sector + 44);
+
+    if (bytes_per_sector != mount->block.block_size ||
+        sectors_per_cluster == 0 ||
+        reserved_sectors == 0 ||
+        number_of_fats == 0 ||
+        root_entry_count != 0 ||
+        total_sectors_16 != 0 ||
+        total_sectors_32 == 0 ||
+        fat_size_16 != 0 ||
+        fat_size_32 == 0 ||
+        root_dir_cluster < 2) {
+        return;
+    }
+
+    mount->fat32.present = 1;
+    mount->fat32.bytes_per_sector = bytes_per_sector;
+    mount->fat32.sectors_per_cluster = sectors_per_cluster;
+    mount->fat32.reserved_sectors = reserved_sectors;
+    mount->fat32.number_of_fats = number_of_fats;
+    mount->fat32.total_sectors = total_sectors_32;
+    mount->fat32.fat_size_sectors = fat_size_32;
+    mount->fat32.root_dir_cluster = root_dir_cluster;
+    mount->fat32.fsinfo_sector = read_le16(sector + 48);
+    mount->fat32.backup_boot_sector = read_le16(sector + 50);
+    mount->fat32.hidden_sectors = read_le32(sector + 28);
+    mount->fat32.volume_id = read_le32(sector + 67);
+    copy_padded_text(mount->fat32.volume_label, sizeof(mount->fat32.volume_label),
+                     sector + 71, 11);
 }
 
 static void append_char(char *buffer, uint64_t buffer_len, uint64_t *pos, char c) {
@@ -504,7 +605,7 @@ static void add_exfat_root_entry(struct blockfs_mount *mount, const char *parent
     entry->stream_flags = stream_flags;
     entry->is_dir = (attributes & 0x10) != 0;
 
-    log_info("exFAT entry: parent=%s name=%s size=%u cluster=%u dir=%u\n",
+    log_info("blockfs entry: parent=%s name=%s size=%u cluster=%u dir=%u\n",
              entry->parent,
              entry->name,
              entry->size,
@@ -1439,6 +1540,296 @@ static void parse_exfat_root_directory(struct blockfs_mount *mount) {
     plan_exfat_create_transaction(mount);
 }
 
+static int fat32_geometry_valid(const struct blockfs_mount *mount) {
+    uint64_t data_start;
+
+    if (!mount->fat32.present ||
+        mount->fat32.bytes_per_sector != mount->block.block_size ||
+        mount->fat32.sectors_per_cluster == 0 ||
+        mount->fat32.reserved_sectors == 0 ||
+        mount->fat32.number_of_fats == 0 ||
+        mount->fat32.fat_size_sectors == 0 ||
+        mount->fat32.root_dir_cluster < 2) {
+        return 0;
+    }
+
+    data_start = (uint64_t)mount->fat32.reserved_sectors +
+                 (uint64_t)mount->fat32.number_of_fats * mount->fat32.fat_size_sectors;
+    return data_start < mount->fat32.total_sectors;
+}
+
+static uint64_t fat32_data_start_lba(const struct blockfs_mount *mount) {
+    return (uint64_t)mount->fat32.reserved_sectors +
+           (uint64_t)mount->fat32.number_of_fats * mount->fat32.fat_size_sectors;
+}
+
+static uint64_t fat32_cluster_count(const struct blockfs_mount *mount) {
+    uint64_t data_start;
+
+    if (!fat32_geometry_valid(mount)) {
+        return 0;
+    }
+    data_start = fat32_data_start_lba(mount);
+    return (mount->fat32.total_sectors - data_start) / mount->fat32.sectors_per_cluster;
+}
+
+static int fat32_cluster_valid(const struct blockfs_mount *mount, uint32_t cluster) {
+    uint64_t cluster_count = fat32_cluster_count(mount);
+
+    return cluster >= 2 && cluster < cluster_count + 2;
+}
+
+static uint64_t fat32_cluster_lba(const struct blockfs_mount *mount, uint32_t cluster) {
+    if (!fat32_cluster_valid(mount, cluster)) {
+        return (uint64_t)-1;
+    }
+    return fat32_data_start_lba(mount) +
+           ((uint64_t)cluster - 2) * mount->fat32.sectors_per_cluster;
+}
+
+static int fat32_read_fat_entry(struct blockfs_mount *mount, uint32_t cluster, uint32_t *next) {
+    uint8_t sector[512];
+    uint64_t fat_byte_offset;
+    uint64_t fat_sector;
+    uint64_t sector_offset;
+
+    if (!fat32_cluster_valid(mount, cluster) || next == 0) {
+        return -1;
+    }
+
+    fat_byte_offset = (uint64_t)cluster * 4;
+    fat_sector = (uint64_t)mount->fat32.reserved_sectors + fat_byte_offset / sizeof(sector);
+    sector_offset = fat_byte_offset % sizeof(sector);
+    if (fat_sector >= (uint64_t)mount->fat32.reserved_sectors + mount->fat32.fat_size_sectors ||
+        sector_offset + 4 > sizeof(sector) ||
+        block_read(mount->block_index, fat_sector, 1, sector) != 0) {
+        return -1;
+    }
+
+    *next = read_le32(sector + sector_offset) & 0x0fffffffU;
+    return 0;
+}
+
+static int fat32_resolve_cluster(struct blockfs_mount *mount, uint32_t first_cluster,
+                                 uint64_t cluster_index, uint32_t *cluster_out) {
+    uint32_t cluster = first_cluster;
+
+    if (!fat32_cluster_valid(mount, cluster) || cluster_out == 0) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < cluster_index; i++) {
+        uint32_t next = 0;
+        if (fat32_read_fat_entry(mount, cluster, &next) != 0 ||
+            next >= 0x0ffffff8U ||
+            !fat32_cluster_valid(mount, next)) {
+            return -1;
+        }
+        cluster = next;
+    }
+
+    *cluster_out = cluster;
+    return 0;
+}
+
+static void fat32_short_name_to_text(const uint8_t *entry, char *out, uint64_t out_len) {
+    uint64_t pos = 0;
+    uint64_t name_len = 8;
+    uint64_t ext_len = 3;
+
+    if (out_len == 0) {
+        return;
+    }
+    while (name_len > 0 && entry[name_len - 1] == ' ') {
+        name_len--;
+    }
+    while (ext_len > 0 && entry[8 + ext_len - 1] == ' ') {
+        ext_len--;
+    }
+    for (uint64_t i = 0; i < name_len && pos + 1 < out_len; i++) {
+        out[pos++] = (char)entry[i];
+    }
+    if (ext_len > 0 && pos + 1 < out_len) {
+        out[pos++] = '.';
+    }
+    for (uint64_t i = 0; i < ext_len && pos + 1 < out_len; i++) {
+        out[pos++] = (char)entry[8 + i];
+    }
+    out[pos] = '\0';
+}
+
+static uint8_t fat32_short_name_checksum(const uint8_t *short_name) {
+    uint8_t sum = 0;
+
+    for (uint64_t i = 0; i < 11; i++) {
+        sum = (uint8_t)(((sum & 1U) ? 0x80U : 0U) + (sum >> 1) + short_name[i]);
+    }
+    return sum;
+}
+
+static void fat32_lfn_reset(struct fat32_lfn_state *state) {
+    if (state == 0) {
+        return;
+    }
+    state->name[0] = '\0';
+    state->checksum = 0;
+    state->total_entries = 0;
+    state->seen_entries = 0;
+    state->present = 0;
+    state->valid = 0;
+}
+
+static void fat32_lfn_decode_entry(const uint8_t *entry, struct fat32_lfn_state *state) {
+    static const uint8_t offsets[13] = {
+        1, 3, 5, 7, 9,
+        14, 16, 18, 20, 22, 24,
+        28, 30
+    };
+    uint8_t order;
+    uint8_t sequence;
+    uint64_t base;
+
+    if (state == 0) {
+        return;
+    }
+    order = entry[0] & 0x1f;
+    sequence = entry[0];
+    if (order == 0 || order > 5) {
+        fat32_lfn_reset(state);
+        return;
+    }
+    if ((sequence & 0x40U) != 0) {
+        fat32_lfn_reset(state);
+        state->total_entries = order;
+        state->checksum = entry[13];
+        state->valid = 1;
+    } else if (!state->valid || order > state->total_entries || entry[13] != state->checksum) {
+        fat32_lfn_reset(state);
+        return;
+    }
+
+    base = ((uint64_t)order - 1) * 13;
+    for (uint64_t i = 0; i < 13; i++) {
+        uint16_t ch = read_le16(entry + offsets[i]);
+        uint64_t out_index = base + i;
+
+        if (ch == 0x0000) {
+            if (out_index < sizeof(state->name)) {
+                state->name[out_index] = '\0';
+            }
+            break;
+        }
+        if (ch == 0xffff) {
+            break;
+        }
+        if (out_index + 1 >= sizeof(state->name)) {
+            continue;
+        }
+        state->name[out_index] = (ch < 0x80) ? (char)ch : '?';
+    }
+    state->seen_entries++;
+    state->present = 1;
+}
+
+static int fat32_entry_valid(const uint8_t *entry) {
+    uint8_t first = entry[0];
+    uint8_t attr = entry[11];
+
+    return first != 0x00 &&
+           first != 0xe5 &&
+           first != 0x05 &&
+           first != '.' &&
+           attr != 0x0f &&
+           (attr & 0x08) == 0;
+}
+
+static void parse_fat32_directory_cluster(struct blockfs_mount *mount,
+                                          const char *parent,
+                                          uint32_t cluster) {
+    uint8_t sector[512];
+    struct fat32_lfn_state lfn;
+    uint64_t lba = fat32_cluster_lba(mount, cluster);
+
+    fat32_lfn_reset(&lfn);
+    if (lba == (uint64_t)-1) {
+        return;
+    }
+    for (uint64_t sector_index = 0; sector_index < mount->fat32.sectors_per_cluster; sector_index++) {
+        if (block_read(mount->block_index, lba + sector_index, 1, sector) != 0) {
+            return;
+        }
+        for (uint64_t off = 0; off < sizeof(sector); off += 32) {
+            const uint8_t *entry = sector + off;
+            char name[VFS_DIRENT_NAME_MAX];
+            uint8_t attr = entry[11];
+            uint32_t first_cluster;
+            uint64_t size;
+
+            if (entry[0] == 0x00) {
+                return;
+            }
+            if (entry[0] == 0xe5) {
+                fat32_lfn_reset(&lfn);
+                continue;
+            }
+            if (attr == 0x0f) {
+                fat32_lfn_decode_entry(entry, &lfn);
+                continue;
+            }
+            if (!fat32_entry_valid(entry)) {
+                fat32_lfn_reset(&lfn);
+                continue;
+            }
+            first_cluster = ((uint32_t)read_le16(entry + 20) << 16) |
+                            (uint32_t)read_le16(entry + 26);
+            size = read_le32(entry + 28);
+            if (lfn.valid && lfn.present && lfn.name[0] != '\0' &&
+                lfn.seen_entries == lfn.total_entries &&
+                lfn.checksum == fat32_short_name_checksum(entry)) {
+                copy_limited(name, sizeof(name), lfn.name);
+            } else {
+                fat32_short_name_to_text(entry, name, sizeof(name));
+            }
+            add_exfat_root_entry(mount, parent, name, size, first_cluster, attr, 0);
+            fat32_lfn_reset(&lfn);
+        }
+    }
+}
+
+static void parse_fat32_directory_chain(struct blockfs_mount *mount,
+                                        const char *parent,
+                                        uint32_t first_cluster) {
+    uint32_t cluster = first_cluster;
+
+    for (uint64_t guard = 0; guard < fat32_cluster_count(mount); guard++) {
+        uint32_t next = 0;
+
+        parse_fat32_directory_cluster(mount, parent, cluster);
+        if (fat32_read_fat_entry(mount, cluster, &next) != 0 || next >= 0x0ffffff8U) {
+            break;
+        }
+        if (!fat32_cluster_valid(mount, next)) {
+            break;
+        }
+        cluster = next;
+    }
+}
+
+static void parse_fat32_root_directory(struct blockfs_mount *mount) {
+    reset_exfat_root_entries(mount);
+    parse_fat32_directory_chain(mount, "/", mount->fat32.root_dir_cluster);
+
+    for (uint64_t i = 0; i < mount->root_entry_count; i++) {
+        char child_path[VFS_MOUNT_PATH_MAX];
+        struct exfat_root_entry *entry = &mount->root_entries[i];
+
+        if (!entry->is_dir || !fat32_cluster_valid(mount, entry->first_cluster) ||
+            join_child_path(child_path, sizeof(child_path), entry->parent, entry->name) != 0) {
+            continue;
+        }
+        parse_fat32_directory_chain(mount, child_path, entry->first_cluster);
+    }
+}
+
 static uint64_t build_info(struct blockfs_mount *mount, char *buffer, uint64_t buffer_len) {
     uint64_t pos = 0;
 
@@ -1508,6 +1899,34 @@ static uint64_t build_info(struct blockfs_mount *mount, char *buffer, uint64_t b
         append_u64(buffer, buffer_len, &pos, mount->exfat.upcase_table_cluster);
         append_string(buffer, buffer_len, &pos, "\nupcase_size: ");
         append_u64(buffer, buffer_len, &pos, mount->exfat.upcase_table_size);
+        append_string(buffer, buffer_len, &pos, "\nroot_entries: ");
+        append_u64(buffer, buffer_len, &pos, mount->root_entry_count);
+        append_string(buffer, buffer_len, &pos, "\n");
+    } else if (mount->fat32.present) {
+        append_string(buffer, buffer_len, &pos, "detected_fs: fat32\nbytes_per_sector: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.bytes_per_sector);
+        append_string(buffer, buffer_len, &pos, "\nsectors_per_cluster: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.sectors_per_cluster);
+        append_string(buffer, buffer_len, &pos, "\nreserved_sectors: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.reserved_sectors);
+        append_string(buffer, buffer_len, &pos, "\nnumber_of_fats: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.number_of_fats);
+        append_string(buffer, buffer_len, &pos, "\ntotal_sectors: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.total_sectors);
+        append_string(buffer, buffer_len, &pos, "\nfat_size_sectors: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.fat_size_sectors);
+        append_string(buffer, buffer_len, &pos, "\nroot_dir_cluster: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.root_dir_cluster);
+        append_string(buffer, buffer_len, &pos, "\nfsinfo_sector: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.fsinfo_sector);
+        append_string(buffer, buffer_len, &pos, "\nbackup_boot_sector: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.backup_boot_sector);
+        append_string(buffer, buffer_len, &pos, "\nhidden_sectors: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.hidden_sectors);
+        append_string(buffer, buffer_len, &pos, "\nvolume_id: ");
+        append_u64(buffer, buffer_len, &pos, mount->fat32.volume_id);
+        append_string(buffer, buffer_len, &pos, "\nvolume_label: ");
+        append_string(buffer, buffer_len, &pos, mount->fat32.volume_label);
         append_string(buffer, buffer_len, &pos, "\nroot_entries: ");
         append_u64(buffer, buffer_len, &pos, mount->root_entry_count);
         append_string(buffer, buffer_len, &pos, "\n");
@@ -1625,6 +2044,49 @@ static uint64_t read_exfat_root_file(struct blockfs_mount *mount, struct exfat_r
     return copied;
 }
 
+static uint64_t read_fat32_file(struct blockfs_mount *mount, struct exfat_root_entry *entry,
+                                uint64_t offset, void *buffer, uint64_t buffer_len) {
+    uint8_t sector[512];
+    uint64_t copied = 0;
+    uint64_t cluster_size = (uint64_t)mount->fat32.sectors_per_cluster * sizeof(sector);
+
+    if (entry->is_dir || !fat32_cluster_valid(mount, entry->first_cluster) ||
+        cluster_size == 0 || offset >= entry->size) {
+        return 0;
+    }
+    if (buffer_len > entry->size - offset) {
+        buffer_len = entry->size - offset;
+    }
+
+    while (copied < buffer_len) {
+        uint64_t file_pos = offset + copied;
+        uint64_t file_cluster_index = file_pos / cluster_size;
+        uint64_t offset_in_cluster = file_pos % cluster_size;
+        uint64_t sector_index = offset_in_cluster / sizeof(sector);
+        uint64_t sector_offset = offset_in_cluster % sizeof(sector);
+        uint64_t to_copy = buffer_len - copied;
+        uint64_t available = sizeof(sector) - sector_offset;
+        uint32_t cluster = 0;
+        uint64_t lba;
+
+        if (to_copy > available) {
+            to_copy = available;
+        }
+        if (fat32_resolve_cluster(mount, entry->first_cluster, file_cluster_index, &cluster) != 0) {
+            return copied;
+        }
+        lba = fat32_cluster_lba(mount, cluster);
+        if (lba == (uint64_t)-1 || sector_index >= mount->fat32.sectors_per_cluster ||
+            block_read(mount->block_index, lba + sector_index, 1, sector) != 0) {
+            return copied;
+        }
+        copy_bytes((uint8_t *)buffer + copied, sector + sector_offset, to_copy);
+        copied += to_copy;
+    }
+
+    return copied;
+}
+
 static uint64_t blockfs_read(const char *path, uint64_t offset,
                              void *buffer, uint64_t buffer_len, void *context) {
     struct blockfs_mount *mount = context;
@@ -1651,6 +2113,9 @@ static uint64_t blockfs_read(const char *path, uint64_t offset,
 
     entry = find_exfat_root_entry(mount, path);
     if (entry != 0) {
+        if (mount->fat32.present) {
+            return read_fat32_file(mount, entry, offset, buffer, buffer_len);
+        }
         return read_exfat_root_file(mount, entry, offset, buffer, buffer_len);
     }
 
@@ -1808,6 +2273,8 @@ static int blockfs_truncate(const char *path, uint64_t size, void *context) {
 int blockfs_mount(uint64_t block_index, const char *mount_path) {
     struct blockfs_mount *mount = 0;
     uint8_t sector[512];
+    vfs_write_fn write = 0;
+    vfs_truncate_fn truncate = 0;
 
     for (uint64_t i = 0; i < BLOCKFS_MAX_MOUNTS; i++) {
         if (!mounts[i].in_use) {
@@ -1827,6 +2294,7 @@ int blockfs_mount(uint64_t block_index, const char *mount_path) {
     mount->block_index = block_index;
     copy_limited(mount->source, sizeof(mount->source), mount->block.name);
     zero_bytes(&mount->exfat, sizeof(mount->exfat));
+    zero_bytes(&mount->fat32, sizeof(mount->fat32));
     reset_exfat_root_entries(mount);
     if (block_read(block_index, 0, 1, sector) == 0) {
         parse_exfat_boot_sector(mount, sector);
@@ -1842,22 +2310,32 @@ int blockfs_mount(uint64_t block_index, const char *mount_path) {
                      mount->exfat.root_dir_cluster);
             parse_exfat_root_directory(mount);
         }
+        if (!mount->exfat.present) {
+            parse_fat32_boot_sector(mount, sector);
+            if (mount->fat32.present) {
+                log_info("FAT32 boot sector detected on %s: bps=%u spc=%u fat=%u+%u root=%u total=%u\n",
+                         mount->block.name,
+                         (uint64_t)mount->fat32.bytes_per_sector,
+                         (uint64_t)mount->fat32.sectors_per_cluster,
+                         (uint64_t)mount->fat32.reserved_sectors,
+                         (uint64_t)mount->fat32.fat_size_sectors,
+                         (uint64_t)mount->fat32.root_dir_cluster,
+                         (uint64_t)mount->fat32.total_sectors);
+                parse_fat32_root_directory(mount);
+            }
+        }
     }
 
+#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
+    if (mount->exfat.present) {
+        write = blockfs_write;
+        truncate = blockfs_truncate;
+    }
+#endif
+
     if (vfs_register_fs_mount("blkfs", mount_path, mount->source,
-                              blockfs_read, blockfs_list,
-#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
-                              blockfs_write,
-#else
-                              0,
-#endif
-                              blockfs_size,
-#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
-                              blockfs_truncate,
-#else
-                              0,
-#endif
-                              0, mount) != 0) {
+                              blockfs_read, blockfs_list, write,
+                              blockfs_size, truncate, 0, mount) != 0) {
         mount->in_use = 0;
         return -1;
     }

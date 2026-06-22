@@ -1,4 +1,5 @@
 #include <memory.h>
+#include <pci.h>
 #include <scheduler.h>
 #include <stdint.h>
 #include <sysinfo.h>
@@ -106,6 +107,8 @@ void sysinfo_get_meminfo(struct sys_meminfo *out) {
 }
 
 void sysinfo_get_system_info(struct sys_system_info *out) {
+    struct pci_xhci_info xhci;
+
     if (out == 0) {
         return;
     }
@@ -115,4 +118,17 @@ void sysinfo_get_system_info(struct sys_system_info *out) {
     out->free_pages = pmm_free_pages();
     out->used_pages = out->total_pages - out->free_pages;
     out->ticks = scheduler_ticks();
+    pci_get_xhci_info(&xhci);
+    out->xhci_found = xhci.found;
+    out->xhci_count = xhci.count;
+    out->xhci_bus = xhci.bus;
+    out->xhci_slot = xhci.slot;
+    out->xhci_function = xhci.function;
+    out->xhci_vendor_id = xhci.vendor_id;
+    out->xhci_device_id = xhci.device_id;
+    out->xhci_revision = xhci.revision;
+    out->xhci_irq_line = xhci.irq_line;
+    out->xhci_bar0_raw = xhci.bar0_raw;
+    out->xhci_mmio_base = xhci.bar0_mmio_base;
+    out->xhci_bar0_is_64bit = xhci.bar0_is_64bit;
 }

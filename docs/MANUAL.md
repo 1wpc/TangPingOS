@@ -62,18 +62,21 @@ because TangPingOS does not write to disk yet.
 TangPingOS also has a first block-device layer. `ramblk0` is an in-memory
 disk-like device with 64 sectors of 512 bytes each. In QEMU, `make run` also
 creates and attaches `build/disk.img` through virtio-blk; the kernel registers
-that real virtual disk as `vd0` and parses its MBR primary partition as `vd0p1`.
-The first partition is also mounted through a small readonly block-backed VFS
-skeleton at `/usb`. The QEMU test partition contains a minimal exFAT-shaped
-boot sector and a tiny root directory sample so the kernel can validate exFAT
-detection, root-directory chain parsing, subdirectory parsing, and FAT-chain
-file reads. It also contains exFAT allocation-bitmap and upcase-table metadata
-entries so the kernel can start validating free-space information before any
-future write support.
+that real virtual disk as `vd0` and parses its MBR primary partitions as
+`vd0p1` and `vd0p2`. The first partition is mounted through a small readonly
+block-backed VFS skeleton at `/usb`. The QEMU test partition contains a minimal
+exFAT-shaped boot sector and a tiny root directory sample so the kernel can
+validate exFAT detection, root-directory chain parsing, subdirectory parsing,
+and FAT-chain file reads. It also contains exFAT allocation-bitmap and
+upcase-table metadata entries so the kernel can start validating free-space
+information before any future write support. The second partition is mounted at
+`/boot` and is a small FAT32 sample that stands in for the kind of UEFI boot
+partition a real machine commonly uses.
 
 `mounts` shows the current VFS mount table. Today `/dev` is a real devfs mount,
-`/usb` is a real block-device-backed mount when QEMU provides `vd0p1`, and
-writable `ramfs` plus readonly `initrd` are layered at `/`. The current `/usb`
+`/usb` and `/boot` are real block-device-backed mounts when QEMU provides
+`vd0p1` and `vd0p2`, and writable `ramfs` plus readonly `initrd` are layered at
+`/`. The current `/usb`
 backend is not a full exFAT filesystem yet; it exposes test files, parsed
 exFAT boot-sector metadata, and readonly root-directory files whose data can
 span a FAT chain. The root directory itself can also span a FAT chain, and
@@ -94,7 +97,10 @@ dry-run patch, so the kernel can verify the resulting bitmap byte, FAT chain,
 and `/NEW.TXT` directory metadata before normal real writes exist. A guarded
 test build can additionally commit those three sector updates to the QEMU
 `disk.img` and read them back for verification; normal builds keep `/usb`
-readonly.
+readonly. The current `/boot` backend recognizes FAT32 boot-sector geometry,
+lists 8.3 short-name files and ASCII long-file-name entries, walks readonly
+subdirectories, and reads file cluster data. It does not yet support Unicode
+long names or FAT32 writes.
 
 ## Shell Commands
 
@@ -120,11 +126,16 @@ readonly.
 | `ps` | `ps` | Lists tasks with PID, state, switch count, exit status, and name. |
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
-| `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, and memory summary. |
+| `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, memory summary, and xHCI count. |
+| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI and MMIO information. |
 | `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
 | `lsblk` | `lsblk` | Lists registered block devices. |
 | `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
 | `blkwrite` | `blkwrite 2 2 hello` | Writes text into one 512-byte sector of a writable block device. |
+
+Single-path commands such as `cd`, `ls`, `cat`, `stat`, `rm`, `touch`, `edit`,
+and `hexdump` accept double quotes around a path, for example
+`cat "/boot/very long filename.txt"`.
 
 When QEMU provides the test disk, `/usb` contains:
 
@@ -136,6 +147,16 @@ When QEMU provides the test disk, `/usb` contains:
 | `/usb/CHAIN.TXT` | Parsed from the QEMU test partition and readable through a two-cluster FAT chain. |
 | `/usb/LATE.TXT` | Parsed from a later root-directory cluster, proving that the root directory chain is followed. |
 | `/usb/DIR/INNER.TXT` | Parsed from a readonly exFAT subdirectory. |
+
+The same QEMU disk also contains a FAT32 sample mounted at `/boot`:
+
+| Path | Function |
+| --- | --- |
+| `/boot/info.txt` | Text metadata for the FAT32 mount, including bytes per sector, FAT size, root cluster, hidden sectors, and volume label. |
+| `/boot/README.TXT` | Readonly FAT32 root-directory short-name file. |
+| `/boot/KERNEL.TXT` | Second readonly FAT32 root-directory short-name file. |
+| `/boot/very long filename.txt` | Readonly FAT32 long-file-name sample spanning multiple LFN entries. |
+| `/boot/EFI/BOOT/BOOTX64.EFI` | Readonly FAT32 subdirectory sample matching the usual UEFI removable-media boot path. |
 
 Standalone programs can be launched with `run`:
 
@@ -167,6 +188,7 @@ ps
 mem
 uptime
 sysinfo
+usb
 lsblk
 blkread 2 0
 blkwrite 2 2 TangPingOS
@@ -385,14 +407,18 @@ make clean && make iso
 ## QEMU Virtual Disk
 
 `make run` builds `build/disk.img` if needed and attaches it as a legacy
-virtio-blk PCI device. The image contains a simple MBR with one primary
-partition beginning at LBA 2048. That partition has a minimal exFAT-shaped boot
-sector plus root-directory entries for `HELLO.TXT`, `CHAIN.TXT`, `LATE.TXT`,
-and `DIR` for parser testing. `CHAIN.TXT` deliberately uses a two-cluster FAT
-chain, `LATE.TXT` deliberately lives in a later root-directory cluster, and
-`DIR/INNER.TXT` tests subdirectory parsing. The kernel scans PCI config space,
+virtio-blk PCI device. The image contains a simple MBR with two primary
+partitions. `vd0p1` begins at LBA 2048 and contains the exFAT-shaped test
+filesystem used by `/usb`. `vd0p2` begins at LBA 11264 and contains the FAT32
+sample used by `/boot`. The exFAT partition has root-directory entries for
+`HELLO.TXT`, `CHAIN.TXT`, `LATE.TXT`, and `DIR` for parser testing.
+`CHAIN.TXT` deliberately uses a two-cluster FAT chain, `LATE.TXT` deliberately
+lives in a later root-directory cluster, and `DIR/INNER.TXT` tests subdirectory
+parsing. The FAT32 partition has short-name root files `README.TXT` and
+`KERNEL.TXT`, an ASCII long-name file `very long filename.txt`, plus an
+`EFI/BOOT/BOOTX64.EFI` subdirectory sample. The kernel scans PCI config space,
 initializes the virtqueue, registers the disk as `vd0`, parses the MBR, and
-registers `vd0p1`.
+registers `vd0p1` and `vd0p2`.
 
 Useful checks in the shell:
 
@@ -405,6 +431,13 @@ stat /usb/CHAIN.TXT
 cat /usb/LATE.TXT
 ls /usb/DIR
 cat /usb/DIR/INNER.TXT
+ls /boot
+cat /boot/info.txt
+cat /boot/README.TXT
+cat "/boot/very long filename.txt"
+ls /boot/EFI
+ls /boot/EFI/BOOT
+cat /boot/EFI/BOOT/BOOTX64.EFI
 hexdump /usb/sector0.bin
 lsblk
 blkread 2 0
@@ -469,6 +502,9 @@ Expected constraints on real hardware:
 - Real hardware disk-controller access is not implemented. The current
   non-memory disk path is QEMU virtio-blk only; the OS still uses the initrd
   packed into the boot image for startup content.
+- The kernel can now detect xHCI USB controllers through PCI and report the
+  first controller's BAR/MMIO information with `usb`, but it does not yet
+  initialize xHCI rings, enumerate USB devices, or talk to USB storage.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.
@@ -489,6 +525,9 @@ exact hardware in advance and bring a fallback QEMU demo.
   parsing, not a complete exFAT filesystem. The `make test-exfat-commit`
   build can commit one fixed `/NEW.TXT` transaction to the QEMU test disk only;
   this is not general-purpose exFAT write support.
+- `/boot` is a readonly FAT32 sample mount with boot-sector parsing, 8.3
+  short-name directory listing, ASCII long-file-name entries, subdirectory
+  walking, and file reads. It does not yet support Unicode long names or writes.
 - No real hardware disk-controller driver; QEMU virtio-blk is supported for
   disk-image sector IO.
 - No USB stack.

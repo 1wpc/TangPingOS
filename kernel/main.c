@@ -122,6 +122,9 @@ void _start(void) {
     if (blockfs_mount(2, "/usb") != 0) {
         console_write("[warn] /usb block mount unavailable\n");
     }
+    if (blockfs_mount(3, "/boot") != 0) {
+        console_write("[warn] /boot block mount unavailable\n");
+    }
     user_init_from_modules(module_request.response);
     scheduler_dump_tasks();
     x86_64_interrupts_enable();

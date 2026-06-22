@@ -220,6 +220,45 @@ static uint64_t copy_token(char *dst, uint64_t dst_len, const char *start, const
     return len;
 }
 
+static uint64_t read_token(char *dst, uint64_t dst_len, const char *src, const char **rest) {
+    uint64_t len = 0;
+    char quote = 0;
+    int closed = 0;
+
+    if (dst_len == 0) {
+        return 0;
+    }
+    src = skip_spaces(src);
+    if (src[0] == '"') {
+        quote = '"';
+        src++;
+    }
+    while (src[0] != '\0') {
+        if (quote != 0) {
+            if (src[0] == quote) {
+                src++;
+                closed = 1;
+                break;
+            }
+        } else if (src[0] == ' ') {
+            break;
+        }
+        if (len + 1 < dst_len) {
+            dst[len++] = src[0];
+        }
+        src++;
+    }
+    if (quote != 0 && !closed) {
+        dst[0] = '\0';
+        return 0;
+    }
+    dst[len] = '\0';
+    if (rest != 0) {
+        *rest = skip_spaces(src);
+    }
+    return len;
+}
+
 static int copy_cstr_limited(char *dst, uint64_t dst_len, const char *src) {
     uint64_t i = 0;
     if (dst_len == 0) {
@@ -957,6 +996,55 @@ static void cmd_sysinfo(void) {
     write_u64_decimal(info.free_pages);
     write_literal("/", 1);
     write_u64_decimal(info.used_pages);
+    write_literal("\nxhci controllers: ", 19);
+    write_u64_decimal(info.xhci_count);
+    if (info.xhci_found) {
+        write_literal(" first=", 7);
+        write_u64_decimal(info.xhci_bus);
+        write_literal(":", 1);
+        write_u64_decimal(info.xhci_slot);
+        write_literal(".", 1);
+        write_u64_decimal(info.xhci_function);
+    }
+    write_literal("\n", 1);
+}
+
+static void cmd_usb(void) {
+    static const char fail[] = "usb: failed\n";
+    struct system_info info;
+
+    if (sys_system_info(&info) != 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        return;
+    }
+    write_literal("xhci found: ", 12);
+    write_u64_decimal(info.xhci_found);
+    write_literal("\ncontrollers: ", 14);
+    write_u64_decimal(info.xhci_count);
+    if (!info.xhci_found) {
+        write_literal("\n", 1);
+        return;
+    }
+    write_literal("\npci: ", 6);
+    write_u64_decimal(info.xhci_bus);
+    write_literal(":", 1);
+    write_u64_decimal(info.xhci_slot);
+    write_literal(".", 1);
+    write_u64_decimal(info.xhci_function);
+    write_literal("\nvendor: ", 9);
+    write_u64_hex(info.xhci_vendor_id);
+    write_literal("\ndevice: ", 9);
+    write_u64_hex(info.xhci_device_id);
+    write_literal("\nrevision: ", 11);
+    write_u64_hex(info.xhci_revision);
+    write_literal("\nirq line: ", 11);
+    write_u64_decimal(info.xhci_irq_line);
+    write_literal("\nbar0 raw: ", 11);
+    write_u64_hex(info.xhci_bar0_raw);
+    write_literal("\nmmio base: ", 12);
+    write_u64_hex(info.xhci_mmio_base);
+    write_literal("\nbar0 64-bit: ", 14);
+    write_u64_decimal(info.xhci_bar0_is_64bit);
     write_literal("\n", 1);
 }
 
@@ -1081,7 +1169,7 @@ static void cmd_run(const char *path, const char *args) {
 
 static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_t buffer_len) {
     static const char help[] =
-        "commands: help, pwd, cd, ls, cat, echo, clear, touch, write, append, rm, stat, cp, mv, hexdump, edit, run, ps, mem, uptime, sysinfo, mounts, lsblk, blkread, blkwrite\n";
+        "commands: help, pwd, cd, ls, cat, echo, clear, touch, write, append, rm, stat, cp, mv, hexdump, edit, run, ps, mem, uptime, sysinfo, usb, mounts, lsblk, blkread, blkwrite\n";
     static const char unknown[] = "unknown command\n";
     static const char usage_blkread[] = "usage: blkread device lba\n";
     static const char usage_blkwrite[] = "usage: blkwrite device lba text\n";
@@ -1141,6 +1229,10 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (strings_equal(line, "sysinfo")) {
         cmd_sysinfo();
+        return;
+    }
+    if (strings_equal(line, "usb")) {
+        cmd_usb();
         return;
     }
     if (strings_equal(line, "lsblk")) {
@@ -1206,7 +1298,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "cd ")) {
         const char *arg = skip_spaces(line + 3);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0 ||
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0 ||
             !path_is_dir(path) || copy_cstr_limited(cwd, SHELL_PATH_MAX, path) != 0) {
             write_literal(cd_fail, sizeof(cd_fail) - 1);
         }
@@ -1218,7 +1312,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "ls ")) {
         const char *arg = skip_spaces(line + 3);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_ls, sizeof(usage_ls) - 1);
             return;
         }
@@ -1227,7 +1323,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "cat ")) {
         const char *arg = skip_spaces(line + 4);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_cat, sizeof(usage_cat) - 1);
             return;
         }
@@ -1236,7 +1334,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "hexdump ")) {
         const char *arg = skip_spaces(line + 8);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_hexdump, sizeof(usage_hexdump) - 1);
             return;
         }
@@ -1245,7 +1345,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "edit ")) {
         const char *arg = skip_spaces(line + 5);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_edit, sizeof(usage_edit) - 1);
             return;
         }
@@ -1254,7 +1356,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "touch ")) {
         const char *arg = skip_spaces(line + 6);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_touch, sizeof(usage_touch) - 1);
             return;
         }
@@ -1343,7 +1447,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "rm ")) {
         const char *arg = skip_spaces(line + 3);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_rm, sizeof(usage_rm) - 1);
             return;
         }
@@ -1356,7 +1462,9 @@ static void run_shell_command(const char *line, char *cwd, char *buffer, uint64_
     }
     if (starts_with(line, "stat ")) {
         const char *arg = skip_spaces(line + 5);
-        if (arg[0] == '\0' || resolve_path(cwd, arg, path, sizeof(path)) != 0) {
+        char token[SHELL_PATH_MAX];
+        if (read_token(token, sizeof(token), arg, 0) == 0 ||
+            resolve_path(cwd, token, path, sizeof(path)) != 0) {
             write_literal(usage_stat, sizeof(usage_stat) - 1);
             return;
         }
@@ -1444,7 +1552,9 @@ static void run_shell_script_self_test(char *buffer, uint64_t buffer_len) {
     run_shell_command("mem", cwd, buffer, buffer_len);
     run_shell_command("uptime", cwd, buffer, buffer_len);
     run_shell_command("sysinfo", cwd, buffer, buffer_len);
+    run_shell_command("usb", cwd, buffer, buffer_len);
     run_shell_command("mounts", cwd, buffer, buffer_len);
+    run_shell_command("cat \"/boot/very long filename.txt\"", cwd, buffer, buffer_len);
 
     run_shell_command("rm script.txt", cwd, buffer, buffer_len);
     run_shell_command("rm empty.txt", cwd, buffer, buffer_len);
@@ -1539,6 +1649,12 @@ static void run_mount_info_self_test(void) {
     if (sys_block_info(2, &block) == 0 &&
         (sys_mount_info(3, &info) != 0 || !strings_equal(info.name, "blkfs") ||
          !strings_equal(info.path, "/usb") || !strings_equal(info.source, block.name))) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(23);
+    }
+    if (sys_block_info(3, &block) == 0 &&
+        (sys_mount_info(4, &info) != 0 || !strings_equal(info.name, "blkfs") ||
+         !strings_equal(info.path, "/boot") || !strings_equal(info.source, block.name))) {
         write_literal(fail, sizeof(fail) - 1);
         sys_exit(23);
     }
@@ -1925,6 +2041,222 @@ static void run_block_mount_self_test(char *buffer, uint64_t buffer_len) {
     write_literal(ok, sizeof(ok) - 1);
 }
 
+static void run_fat32_mount_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: FAT32 mount read ok\n";
+    static const char fail[] = "shell.elf: FAT32 mount read failed\n";
+    static const char info_prefix[] = "TangPingOS block-backed mount";
+    static const char info_fs[] = "detected_fs: fat32";
+    static const char info_bps[] = "bytes_per_sector: 512";
+    static const char info_spc[] = "sectors_per_cluster: 1";
+    static const char info_root[] = "root_dir_cluster: 2";
+    static const char info_label[] = "volume_label: TANGBOOT";
+    static const char readme_name[] = "README.TXT";
+    static const char kernel_name[] = "KERNEL.TXT";
+    static const char efi_name[] = "EFI";
+    static const char long_name_file[] = "very long filename.txt";
+    static const char boot_name[] = "BOOT";
+    static const char bootx64_name[] = "BOOTX64.EFI";
+    static const char readme_content[] = "Hello from FAT32 boot partition.\n";
+    static const char kernel_content[] = "This FAT32 sample stands in for a UEFI ESP.\n";
+    static const char long_name_content[] = "FAT32 multi-entry long file names are visible now.\n";
+    static const char bootx64_content[] = "TangPingOS can now walk FAT32 EFI/BOOT.\n";
+    struct block_device_info block;
+    struct dirent dirent;
+    uint64_t fd;
+    uint64_t read_len;
+    int found_readme = 0;
+    int found_kernel = 0;
+    int found_efi = 0;
+    int found_long_name = 0;
+    int found_boot = 0;
+    int found_bootx64 = 0;
+
+    if (sys_block_info(3, &block) != 0) {
+        return;
+    }
+    if (buffer_len < 512) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    fd = sys_open("/boot/info.txt");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    read_len = 0;
+    while (read_len + 1 < buffer_len) {
+        uint64_t chunk = sys_read(fd, buffer + read_len, buffer_len - 1 - read_len);
+        if (chunk == (uint64_t)-1) {
+            sys_close(fd);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(27);
+        }
+        if (chunk == 0) {
+            break;
+        }
+        read_len += chunk;
+    }
+    sys_close(fd);
+    if (read_len == 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    buffer[read_len] = '\0';
+    if (!starts_with(buffer, info_prefix) ||
+        !contains_text(buffer, info_fs) ||
+        !contains_text(buffer, info_bps) ||
+        !contains_text(buffer, info_spc) ||
+        !contains_text(buffer, info_root) ||
+        !contains_text(buffer, info_label)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t result = sys_getdents("/boot", i, &dirent);
+        if (result == 0) {
+            break;
+        }
+        if (result == (uint64_t)-1) {
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(27);
+        }
+        if (strings_equal(dirent.name, readme_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(readme_content) - 1) {
+            found_readme = 1;
+        }
+        if (strings_equal(dirent.name, kernel_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(kernel_content) - 1) {
+            found_kernel = 1;
+        }
+        if (strings_equal(dirent.name, efi_name) &&
+            dirent.type == DIRENT_TYPE_DIR) {
+            found_efi = 1;
+        }
+        if (strings_equal(dirent.name, long_name_file) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(long_name_content) - 1) {
+            found_long_name = 1;
+        }
+    }
+    if (!found_readme || !found_kernel || !found_efi || !found_long_name) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t result = sys_getdents("/boot/EFI", i, &dirent);
+        if (result == 0) {
+            break;
+        }
+        if (result == (uint64_t)-1) {
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(27);
+        }
+        if (strings_equal(dirent.name, boot_name) &&
+            dirent.type == DIRENT_TYPE_DIR) {
+            found_boot = 1;
+        }
+    }
+    if (!found_boot) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t result = sys_getdents("/boot/EFI/BOOT", i, &dirent);
+        if (result == 0) {
+            break;
+        }
+        if (result == (uint64_t)-1) {
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(27);
+        }
+        if (strings_equal(dirent.name, bootx64_name) &&
+            dirent.type == DIRENT_TYPE_FILE &&
+            dirent.size == sizeof(bootx64_content) - 1) {
+            found_bootx64 = 1;
+        }
+    }
+    if (!found_bootx64) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    fd = sys_open("/boot/README.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(readme_content) - 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, readme_content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    fd = sys_open("/boot/KERNEL.TXT");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(kernel_content) - 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, kernel_content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    fd = sys_open("/boot/very long filename.txt");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(long_name_content) - 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, long_name_content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    fd = sys_open("/boot/EFI/BOOT/BOOTX64.EFI");
+    if (fd == (uint64_t)-1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    read_len = sys_read(fd, buffer, buffer_len - 1);
+    sys_close(fd);
+    if (read_len != sizeof(bootx64_content) - 1) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+    buffer[read_len] = '\0';
+    if (!strings_equal(buffer, bootx64_content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(27);
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
 #ifdef TANGPINGOS_TEST_EXFAT_COMMIT
 static void run_exfat_vfs_write_self_test(char *buffer, uint64_t buffer_len) {
     static const char ok[] = "shell.elf: exFAT VFS write ok\n";
@@ -2026,6 +2358,7 @@ void _start(void) {
     run_virtio_block_self_test(heap, 512);
     run_mount_info_self_test();
     run_block_mount_self_test(heap, 8192);
+    run_fat32_mount_self_test(heap, 8192);
 #ifdef TANGPINGOS_TEST_EXFAT_COMMIT
     run_exfat_vfs_write_self_test(heap, 8192);
 #endif

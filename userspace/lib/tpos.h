@@ -83,6 +83,18 @@ struct system_info {
     uint64_t page_size;
     uint64_t ticks;
     uint64_t timer_hz;
+    uint64_t xhci_found;
+    uint64_t xhci_count;
+    uint64_t xhci_bus;
+    uint64_t xhci_slot;
+    uint64_t xhci_function;
+    uint64_t xhci_vendor_id;
+    uint64_t xhci_device_id;
+    uint64_t xhci_revision;
+    uint64_t xhci_irq_line;
+    uint64_t xhci_bar0_raw;
+    uint64_t xhci_mmio_base;
+    uint64_t xhci_bar0_is_64bit;
     char cpu_name[SYSINFO_CPU_NAME_MAX];
 };
 

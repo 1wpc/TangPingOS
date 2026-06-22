@@ -57,3 +57,9 @@
 - 2026-06-21: 新增 exFAT 写入事务内存补丁校验，`/usb/info.txt` 可显示 dry-run 后的 bitmap、FAT 链和 `/NEW.TXT` 目录元数据。
 - 2026-06-21: 新增受保护的 exFAT 测试提交路径，`make test-exfat-commit` 可在 QEMU 测试盘上写回并读回验证 `/NEW.TXT` 事务。
 - 2026-06-21: 新增 exFAT 测试 VFS 写入路径，`make test-exfat-commit` 可通过 `/usb/NEW.TXT` 写入并读回验证。
+- 2026-06-22: 新增 FAT32 只读测试分区并挂载到 `/boot`，可读取根目录短文件名文件 `README.TXT` 和 `KERNEL.TXT`。
+- 2026-06-22: 扩展 FAT32 只读子目录解析，`/boot/EFI/BOOT/BOOTX64.EFI` 可被列出并读取。
+- 2026-06-22: 新增 FAT32 ASCII 长文件名读取，`/boot/long name.txt` 可被列出并打开。
+- 2026-06-22: shell 单路径命令支持双引号路径，可访问带空格的文件名。
+- 2026-06-22: FAT32 长文件名解析增加短名校验和多 LFN 项拼接，`/boot/very long filename.txt` 可读取。
+- 2026-06-22: 新增 xHCI PCI 探测与 `usb` 命令，可显示首个 USB 控制器的 PCI/BAR/MMIO 信息。
