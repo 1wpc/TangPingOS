@@ -1045,6 +1045,46 @@ static void cmd_usb(void) {
     write_u64_hex(info.xhci_mmio_base);
     write_literal("\nbar0 64-bit: ", 14);
     write_u64_decimal(info.xhci_bar0_is_64bit);
+    write_literal("\nmmio mapped: ", 14);
+    write_u64_decimal(info.xhci_mmio_mapped);
+    if (info.xhci_mmio_mapped) {
+        write_literal("\ncap length: ", 13);
+        write_u64_decimal(info.xhci_cap_length);
+        write_literal("\nhci version: ", 14);
+        write_u64_hex(info.xhci_hci_version);
+        write_literal("\nmax slots: ", 12);
+        write_u64_decimal(info.xhci_max_slots);
+        write_literal("\nmax interrupters: ", 19);
+        write_u64_decimal(info.xhci_max_interrupters);
+        write_literal("\nmax ports: ", 12);
+        write_u64_decimal(info.xhci_max_ports);
+        write_literal("\ndoorbell offset: ", 18);
+        write_u64_hex(info.xhci_doorbell_offset);
+        write_literal("\nruntime offset: ", 17);
+        write_u64_hex(info.xhci_runtime_offset);
+        write_cstr("\nop regs ready: ");
+        write_u64_decimal(info.xhci_op_regs_ready);
+        write_cstr("\nop usbcmd before: ");
+        write_u64_hex(info.xhci_op_usbcmd_before);
+        write_cstr("\nop usbsts before: ");
+        write_u64_hex(info.xhci_op_usbsts_before);
+        write_cstr("\nop pagesize: ");
+        write_u64_hex(info.xhci_op_pagesize);
+        write_cstr("\nreset allowed: ");
+        write_u64_decimal(info.xhci_reset_allowed);
+        write_cstr("\nreset attempted: ");
+        write_u64_decimal(info.xhci_reset_attempted);
+        write_cstr("\nreset ok: ");
+        write_u64_decimal(info.xhci_reset_ok);
+        write_cstr("\nhalt ok: ");
+        write_u64_decimal(info.xhci_halt_ok);
+        write_cstr("\nready ok: ");
+        write_u64_decimal(info.xhci_ready_ok);
+        write_cstr("\nop usbcmd after: ");
+        write_u64_hex(info.xhci_op_usbcmd_after);
+        write_cstr("\nop usbsts after: ");
+        write_u64_hex(info.xhci_op_usbsts_after);
+    }
     write_literal("\n", 1);
 }
 

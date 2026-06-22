@@ -28,6 +28,25 @@ struct pci_xhci_info {
     uint64_t bar0_raw;
     uint64_t bar0_mmio_base;
     uint64_t bar0_is_64bit;
+    uint64_t mmio_mapped;
+    uint64_t cap_length;
+    uint64_t hci_version;
+    uint64_t max_slots;
+    uint64_t max_interrupters;
+    uint64_t max_ports;
+    uint64_t doorbell_offset;
+    uint64_t runtime_offset;
+    uint64_t op_regs_ready;
+    uint64_t op_usbcmd_before;
+    uint64_t op_usbsts_before;
+    uint64_t op_pagesize;
+    uint64_t reset_allowed;
+    uint64_t reset_attempted;
+    uint64_t reset_ok;
+    uint64_t halt_ok;
+    uint64_t ready_ok;
+    uint64_t op_usbcmd_after;
+    uint64_t op_usbsts_after;
 };
 
 void pci_init(void);
@@ -41,5 +60,6 @@ void pci_write_config16(uint8_t bus, uint8_t slot, uint8_t function, uint8_t off
 uint8_t pci_read_config8(uint8_t bus, uint8_t slot, uint8_t function, uint8_t offset);
 uint32_t pci_bar(const struct pci_device *device, uint8_t bar_index);
 void pci_enable_io_bus_master(const struct pci_device *device);
+void pci_enable_mmio_bus_master(const struct pci_device *device);
 
 #endif

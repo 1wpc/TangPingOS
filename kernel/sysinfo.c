@@ -131,4 +131,23 @@ void sysinfo_get_system_info(struct sys_system_info *out) {
     out->xhci_bar0_raw = xhci.bar0_raw;
     out->xhci_mmio_base = xhci.bar0_mmio_base;
     out->xhci_bar0_is_64bit = xhci.bar0_is_64bit;
+    out->xhci_mmio_mapped = xhci.mmio_mapped;
+    out->xhci_cap_length = xhci.cap_length;
+    out->xhci_hci_version = xhci.hci_version;
+    out->xhci_max_slots = xhci.max_slots;
+    out->xhci_max_interrupters = xhci.max_interrupters;
+    out->xhci_max_ports = xhci.max_ports;
+    out->xhci_doorbell_offset = xhci.doorbell_offset;
+    out->xhci_runtime_offset = xhci.runtime_offset;
+    out->xhci_op_regs_ready = xhci.op_regs_ready;
+    out->xhci_op_usbcmd_before = xhci.op_usbcmd_before;
+    out->xhci_op_usbsts_before = xhci.op_usbsts_before;
+    out->xhci_op_pagesize = xhci.op_pagesize;
+    out->xhci_reset_allowed = xhci.reset_allowed;
+    out->xhci_reset_attempted = xhci.reset_attempted;
+    out->xhci_reset_ok = xhci.reset_ok;
+    out->xhci_halt_ok = xhci.halt_ok;
+    out->xhci_ready_ok = xhci.ready_ok;
+    out->xhci_op_usbcmd_after = xhci.op_usbcmd_after;
+    out->xhci_op_usbsts_after = xhci.op_usbsts_after;
 }

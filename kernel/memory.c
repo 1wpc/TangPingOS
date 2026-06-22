@@ -25,6 +25,8 @@
 #define HEAP_SIZE (16ULL * 1024ULL * 1024ULL)
 #define HEAP_ALIGN 16ULL
 #define HEAP_MAGIC 0x54484541504d454dULL
+#define MMIO_BASE 0xffffffffa0000000ULL
+#define MMIO_SIZE (16ULL * 1024ULL * 1024ULL)
 
 static uint64_t pmm_bitmap[BITMAP_WORDS];
 static uint64_t pmm_max_page_index;
@@ -35,6 +37,7 @@ static uint64_t hhdm_base;
 static uint64_t kernel_cr3;
 static uint64_t heap_next = HEAP_BASE;
 static uint64_t heap_mapped_end = HEAP_BASE;
+static uint64_t mmio_next = MMIO_BASE;
 
 struct heap_block {
     uint64_t size;
@@ -266,6 +269,11 @@ int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, u
         pte_flags &= ~PTE_PCD;
         pte_flags |= PTE_PWT;
     }
+    if ((pte_flags & VMM_FLAG_UNCACHED) != 0) {
+        pte_flags &= ~VMM_FLAG_UNCACHED;
+        pte_flags |= PTE_PCD;
+        pte_flags &= ~PTE_PWT;
+    }
 
     pt[pt_i] = (phys_addr & PTE_ADDR_MASK) | pte_flags | PTE_PRESENT;
     if ((read_cr3() & PTE_ADDR_MASK) == (cr3_phys & PTE_ADDR_MASK)) {
@@ -322,6 +330,31 @@ int vmm_translate_kernel_addr(uint64_t virt_addr, uint64_t *phys_out) {
 
     *phys_out = (pte & PTE_ADDR_MASK) | (virt_addr & (PAGE_SIZE - 1));
     return 0;
+}
+
+void *mmio_map_region(uint64_t phys_addr, uint64_t length) {
+    if (length == 0) {
+        return NULL;
+    }
+
+    uint64_t offset = phys_addr & (PAGE_SIZE - 1);
+    uint64_t phys_start = phys_addr & ~(PAGE_SIZE - 1);
+    uint64_t map_len = length + offset;
+    uint64_t pages = (map_len + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t virt_start = mmio_next;
+
+    if (virt_start + pages * PAGE_SIZE > MMIO_BASE + MMIO_SIZE) {
+        return NULL;
+    }
+    for (uint64_t i = 0; i < pages; i++) {
+        if (vmm_map_page(virt_start + i * PAGE_SIZE,
+                         phys_start + i * PAGE_SIZE,
+                         VMM_FLAG_WRITABLE | VMM_FLAG_NO_EXEC | VMM_FLAG_UNCACHED) != 0) {
+            return NULL;
+        }
+    }
+    mmio_next += pages * PAGE_SIZE;
+    return (void *)(virt_start + offset);
 }
 
 int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, uint64_t *phys_out) {

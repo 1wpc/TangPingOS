@@ -9,6 +9,7 @@
 #define VMM_FLAG_WRITABLE (1ULL << 1)
 #define VMM_FLAG_USER     (1ULL << 2)
 #define VMM_FLAG_WRITE_COMBINING (1ULL << 3)
+#define VMM_FLAG_UNCACHED (1ULL << 4)
 #define VMM_FLAG_NO_EXEC  (1ULL << 63)
 
 void memory_init(struct limine_memmap_response *memmap, uint64_t hhdm_offset);
@@ -23,6 +24,7 @@ int vmm_map_page(uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
 int vmm_map_page_in(uint64_t cr3_phys, uint64_t virt_addr, uint64_t phys_addr, uint64_t flags);
 int vmm_translate_kernel_addr(uint64_t virt_addr, uint64_t *phys_out);
 int vmm_translate_user_addr(uint64_t cr3_phys, uint64_t virt_addr, int write, uint64_t *phys_out);
+void *mmio_map_region(uint64_t phys_addr, uint64_t length);
 uint64_t vmm_destroy_user_address_space(uint64_t cr3_phys);
 uint64_t vmm_create_address_space(void);
 uint64_t vmm_current_address_space(void);

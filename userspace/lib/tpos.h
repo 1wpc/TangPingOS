@@ -95,6 +95,25 @@ struct system_info {
     uint64_t xhci_bar0_raw;
     uint64_t xhci_mmio_base;
     uint64_t xhci_bar0_is_64bit;
+    uint64_t xhci_mmio_mapped;
+    uint64_t xhci_cap_length;
+    uint64_t xhci_hci_version;
+    uint64_t xhci_max_slots;
+    uint64_t xhci_max_interrupters;
+    uint64_t xhci_max_ports;
+    uint64_t xhci_doorbell_offset;
+    uint64_t xhci_runtime_offset;
+    uint64_t xhci_op_regs_ready;
+    uint64_t xhci_op_usbcmd_before;
+    uint64_t xhci_op_usbsts_before;
+    uint64_t xhci_op_pagesize;
+    uint64_t xhci_reset_allowed;
+    uint64_t xhci_reset_attempted;
+    uint64_t xhci_reset_ok;
+    uint64_t xhci_halt_ok;
+    uint64_t xhci_ready_ok;
+    uint64_t xhci_op_usbcmd_after;
+    uint64_t xhci_op_usbsts_after;
     char cpu_name[SYSINFO_CPU_NAME_MAX];
 };
 

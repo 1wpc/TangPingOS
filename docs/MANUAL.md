@@ -127,7 +127,7 @@ long names or FAT32 writes.
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
 | `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, memory summary, and xHCI count. |
-| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI and MMIO information. |
+| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, and operational-register/reset information. |
 | `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
 | `lsblk` | `lsblk` | Lists registered block devices. |
 | `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
@@ -502,9 +502,12 @@ Expected constraints on real hardware:
 - Real hardware disk-controller access is not implemented. The current
   non-memory disk path is QEMU virtio-blk only; the OS still uses the initrd
   packed into the boot image for startup content.
-- The kernel can now detect xHCI USB controllers through PCI and report the
-  first controller's BAR/MMIO information with `usb`, but it does not yet
-  initialize xHCI rings, enumerate USB devices, or talk to USB storage.
+- The kernel can now detect xHCI USB controllers through PCI, map the first
+  controller's MMIO registers, report capability and operational registers with
+  `usb`, and perform a guarded controller reset on QEMU's xHCI device. On real
+  hardware it currently skips taking ownership/reset until BIOS/OS xHCI handoff
+  is implemented, and it does not yet initialize xHCI rings, enumerate USB
+  devices, or talk to USB storage.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.

@@ -63,3 +63,5 @@
 - 2026-06-22: shell 单路径命令支持双引号路径，可访问带空格的文件名。
 - 2026-06-22: FAT32 长文件名解析增加短名校验和多 LFN 项拼接，`/boot/very long filename.txt` 可读取。
 - 2026-06-22: 新增 xHCI PCI 探测与 `usb` 命令，可显示首个 USB 控制器的 PCI/BAR/MMIO 信息。
+- 2026-06-22: 新增 MMIO 映射与 xHCI capability register 读取，`usb` 可显示版本、slots、interrupts 和 ports。
+- 2026-06-22: 新增 xHCI operational register 读取与 QEMU 受控 reset，`usb` 可显示 halt/reset/ready 状态。
