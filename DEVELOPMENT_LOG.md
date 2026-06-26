@@ -80,3 +80,9 @@
 - 2026-06-22: 将 USB Mass Storage 读扇区路径注册为只读块设备 `usb0`，支持 `lsblk`/`blkread` 访问。
 - 2026-06-26: 新增 USB exFAT 测试镜像生成、`usb0p1` 分区扫描与 `/usbdisk` USB BOT 挂载验证。
 - 2026-06-26: 新增 USB Mass Storage BOT/SCSI `WRITE(10)` scratch 扇区写入与读回验证，`usb0` 可在自检通过后作为可写块设备注册。
+- 2026-06-26: 新增 shell `usbtestwrite` 命令与启动自检，用受限 scratch 扇区验证用户态到 USB 块写入的完整路径。
+- 2026-06-26: 扩展 `make test-exfat-commit`，可在 QEMU USB exFAT 镜像上提交固定 `/usbdisk/NEW.TXT` 并通过 VFS 写入读回验证。
+- 2026-06-26: 扩展 exFAT 测试创建路径，预留事务槽可重命名为受限 uppercase 8.3 根文件名并通过普通 VFS create/write/read 验证。
+- 2026-06-26: 扩展 exFAT 测试创建路径，可在根目录动态分配空目录项和三簇 FAT 链以创建多个受限 uppercase 8.3 文件。
+- 2026-06-26: 新增 exFAT 测试 unlink 路径，可将测试创建文件目录项标记删除并回收对应 bitmap/FAT 三簇链。
+- 2026-06-26: 将 xHCI bulk in/out 传输环扩展为 4 页，避免 USB exFAT 多轮读写测试过早耗尽 BOT 传输槽。

@@ -37,6 +37,8 @@
 #define XHCI_MMIO_MAP_BYTES 0x4000ULL
 #define XHCI_TRB_SIZE 16ULL
 #define XHCI_RING_TRBS (PAGE_SIZE / XHCI_TRB_SIZE)
+#define XHCI_TRANSFER_RING_PAGES 4ULL
+#define XHCI_TRANSFER_RING_TRBS ((XHCI_TRANSFER_RING_PAGES * PAGE_SIZE) / XHCI_TRB_SIZE)
 #define XHCI_LINK_TRB_TYPE 6ULL
 #define XHCI_NORMAL_TRB_TYPE 1ULL
 #define XHCI_SETUP_STAGE_TRB_TYPE 2ULL
@@ -55,7 +57,8 @@
 #define XHCI_SETUP_TRT_IN (3ULL << 16)
 #define XHCI_LINK_TRB_TOGGLE_CYCLE (1ULL << 1)
 #define XHCI_COMPLETION_SUCCESS 1ULL
-#define XHCI_EVENT_RING_SEGMENT_TRBS 128ULL
+#define XHCI_EVENT_RING_SEGMENT_PAGES 4ULL
+#define XHCI_EVENT_RING_SEGMENT_TRBS ((XHCI_EVENT_RING_SEGMENT_PAGES * PAGE_SIZE) / XHCI_TRB_SIZE)
 #define XHCI_RUNTIME_IR0_OFFSET 0x20ULL
 #define XHCI_IR_ERSTSZ 0x08ULL
 #define XHCI_IR_ERSTBA 0x10ULL
@@ -707,7 +710,7 @@ static void xhci_configure_rings(volatile uint8_t *regs) {
     }
 
     xhci_info.command_ring_phys = pmm_alloc_page();
-    xhci_info.event_ring_phys = pmm_alloc_page();
+    xhci_info.event_ring_phys = pmm_alloc_contiguous_pages(XHCI_EVENT_RING_SEGMENT_PAGES);
     xhci_info.erst_phys = pmm_alloc_page();
     xhci_info.dcbaa_phys = pmm_alloc_page();
     if (xhci_info.command_ring_phys == 0 ||
@@ -718,7 +721,9 @@ static void xhci_configure_rings(volatile uint8_t *regs) {
     }
 
     zero_page_phys(xhci_info.command_ring_phys);
-    zero_page_phys(xhci_info.event_ring_phys);
+    for (uint64_t i = 0; i < XHCI_EVENT_RING_SEGMENT_PAGES; i++) {
+        zero_page_phys(xhci_info.event_ring_phys + i * PAGE_SIZE);
+    }
     zero_page_phys(xhci_info.erst_phys);
     zero_page_phys(xhci_info.dcbaa_phys);
 
@@ -1344,8 +1349,8 @@ static void xhci_configure_first_mass_storage_endpoints(volatile uint8_t *regs) 
     max_dci = in_dci > out_dci ? in_dci : out_dci;
 
     xhci_info.configure_endpoint_input_context_phys = pmm_alloc_page();
-    xhci_info.bulk_in_ring_phys = pmm_alloc_page();
-    xhci_info.bulk_out_ring_phys = pmm_alloc_page();
+    xhci_info.bulk_in_ring_phys = pmm_alloc_contiguous_pages(XHCI_TRANSFER_RING_PAGES);
+    xhci_info.bulk_out_ring_phys = pmm_alloc_contiguous_pages(XHCI_TRANSFER_RING_PAGES);
     if (xhci_info.configure_endpoint_input_context_phys == 0 ||
         xhci_info.bulk_in_ring_phys == 0 ||
         xhci_info.bulk_out_ring_phys == 0) {
@@ -1353,8 +1358,10 @@ static void xhci_configure_first_mass_storage_endpoints(volatile uint8_t *regs) 
     }
 
     zero_page_phys(xhci_info.configure_endpoint_input_context_phys);
-    zero_page_phys(xhci_info.bulk_in_ring_phys);
-    zero_page_phys(xhci_info.bulk_out_ring_phys);
+    for (uint64_t i = 0; i < XHCI_TRANSFER_RING_PAGES; i++) {
+        zero_page_phys(xhci_info.bulk_in_ring_phys + i * PAGE_SIZE);
+        zero_page_phys(xhci_info.bulk_out_ring_phys + i * PAGE_SIZE);
+    }
 
     context_size = xhci_info.context_size;
     if (context_size == 0) {
@@ -1368,11 +1375,11 @@ static void xhci_configure_first_mass_storage_endpoints(volatile uint8_t *regs) 
     bulk_in_ring = (uint64_t *)phys_to_virt(xhci_info.bulk_in_ring_phys);
     bulk_out_ring = (uint64_t *)phys_to_virt(xhci_info.bulk_out_ring_phys);
 
-    bulk_in_ring[(XHCI_RING_TRBS - 1) * 2 + 0] = xhci_info.bulk_in_ring_phys;
-    bulk_in_ring[(XHCI_RING_TRBS - 1) * 2 + 1] =
+    bulk_in_ring[(XHCI_TRANSFER_RING_TRBS - 1) * 2 + 0] = xhci_info.bulk_in_ring_phys;
+    bulk_in_ring[(XHCI_TRANSFER_RING_TRBS - 1) * 2 + 1] =
         (XHCI_LINK_TRB_TYPE << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TOGGLE_CYCLE | XHCI_TRB_CYCLE;
-    bulk_out_ring[(XHCI_RING_TRBS - 1) * 2 + 0] = xhci_info.bulk_out_ring_phys;
-    bulk_out_ring[(XHCI_RING_TRBS - 1) * 2 + 1] =
+    bulk_out_ring[(XHCI_TRANSFER_RING_TRBS - 1) * 2 + 0] = xhci_info.bulk_out_ring_phys;
+    bulk_out_ring[(XHCI_TRANSFER_RING_TRBS - 1) * 2 + 1] =
         (XHCI_LINK_TRB_TYPE << XHCI_TRB_TYPE_SHIFT) | XHCI_LINK_TRB_TOGGLE_CYCLE | XHCI_TRB_CYCLE;
 
     input_context[1] = (uint32_t)((1ULL << 0) | (1ULL << in_dci) | (1ULL << out_dci));
@@ -1478,7 +1485,7 @@ static int xhci_bulk_transfer(volatile uint8_t *regs,
         xhci_info.address_device_slot_id == 0 || xhci_info.doorbell_offset == 0) {
         return -1;
     }
-    if (ring_trb_index >= XHCI_RING_TRBS - 1 || length == 0 || length > PAGE_SIZE) {
+    if (ring_trb_index >= XHCI_TRANSFER_RING_TRBS - 1 || length == 0 || length > PAGE_SIZE) {
         return -1;
     }
 
@@ -1818,8 +1825,8 @@ static int xhci_usb_storage_read_sector(uint64_t lba, void *buffer) {
     if (lba > xhci_info.bot_capacity_last_lba) {
         return -1;
     }
-    if (xhci_bulk_out_next_trb >= XHCI_RING_TRBS - 1 ||
-        xhci_bulk_in_next_trb + 1 >= XHCI_RING_TRBS - 1 ||
+    if (xhci_bulk_out_next_trb >= XHCI_TRANSFER_RING_TRBS - 1 ||
+        xhci_bulk_in_next_trb + 1 >= XHCI_TRANSFER_RING_TRBS - 1 ||
         xhci_next_transfer_event + 2 >= XHCI_EVENT_RING_SEGMENT_TRBS) {
         log_warn("USB storage BOT ring exhausted; reboot required before more reads\n");
         return -1;
@@ -1893,8 +1900,8 @@ static int xhci_usb_storage_write_sector(uint64_t lba, const void *buffer) {
     if (lba > xhci_info.bot_capacity_last_lba) {
         return -1;
     }
-    if (xhci_bulk_out_next_trb + 1 >= XHCI_RING_TRBS - 1 ||
-        xhci_bulk_in_next_trb >= XHCI_RING_TRBS - 1 ||
+    if (xhci_bulk_out_next_trb + 1 >= XHCI_TRANSFER_RING_TRBS - 1 ||
+        xhci_bulk_in_next_trb >= XHCI_TRANSFER_RING_TRBS - 1 ||
         xhci_next_transfer_event + 2 >= XHCI_EVENT_RING_SEGMENT_TRBS) {
         log_warn("USB storage BOT ring exhausted; reboot required before more writes\n");
         return -1;
