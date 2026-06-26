@@ -15,6 +15,7 @@
 #define EXFAT_CREATE_PLAN_MAX_NAME_CHARS 15
 #define EXFAT_CREATE_PLAN_REQUIRED_ENTRIES 3
 #define EXFAT_CREATE_PLAN_ENTRY_BYTES (EXFAT_CREATE_PLAN_REQUIRED_ENTRIES * EXFAT_ENTRY_SIZE)
+#define EXFAT_TEST_TX_MAX_SECTORS 4
 
 struct exfat_boot_info {
     int present;
@@ -252,6 +253,197 @@ static void write_le64(uint8_t *data, uint64_t value) {
     write_le32(data, (uint32_t)value);
     write_le32(data + 4, (uint32_t)(value >> 32));
 }
+
+#ifdef TANGPINGOS_TEST_EXFAT_COMMIT
+typedef int (*exfat_sector_mutator_fn)(uint8_t *sector, void *context);
+
+struct exfat_bit_patch {
+    uint64_t offset;
+    uint8_t mask;
+    int set;
+};
+
+struct exfat_u32_patch {
+    uint64_t offset;
+    uint32_t value;
+};
+
+struct exfat_bytes_patch {
+    uint64_t offset;
+    const uint8_t *bytes;
+    uint64_t size;
+};
+
+struct exfat_delete_entries_patch {
+    uint64_t offset;
+    uint64_t entry_count;
+};
+
+struct exfat_sector_transaction_entry {
+    uint64_t lba;
+    uint8_t sector[512];
+};
+
+struct exfat_sector_transaction {
+    struct blockfs_mount *mount;
+    uint64_t count;
+    struct exfat_sector_transaction_entry entries[EXFAT_TEST_TX_MAX_SECTORS];
+};
+
+static int raw_bytes_equal(const uint8_t *a, const uint8_t *b, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int write_exfat_sector_checked_for_test(struct blockfs_mount *mount,
+                                               uint64_t lba,
+                                               const uint8_t *sector) {
+    uint8_t verify[512];
+
+    if (mount == 0 || sector == 0 || mount->block.block_size != sizeof(verify)) {
+        return -1;
+    }
+    if (block_write(mount->block_index, lba, 1, sector) != 0 ||
+        block_read(mount->block_index, lba, 1, verify) != 0 ||
+        !raw_bytes_equal(sector, verify, sizeof(verify))) {
+        return -1;
+    }
+    return 0;
+}
+
+static int mutate_exfat_sector_checked_for_test(struct blockfs_mount *mount,
+                                                uint64_t lba,
+                                                exfat_sector_mutator_fn mutator,
+                                                void *context) {
+    uint8_t sector[512];
+
+    if (mount == 0 || mutator == 0 || mount->block.block_size != sizeof(sector) ||
+        block_read(mount->block_index, lba, 1, sector) != 0 ||
+        mutator(sector, context) != 0) {
+        return -1;
+    }
+    return write_exfat_sector_checked_for_test(mount, lba, sector);
+}
+
+static int apply_exfat_bit_patch(uint8_t *sector, void *context) {
+    struct exfat_bit_patch *patch = context;
+
+    if (sector == 0 || patch == 0 || patch->offset >= 512) {
+        return -1;
+    }
+    if (patch->set) {
+        sector[patch->offset] |= patch->mask;
+    } else {
+        sector[patch->offset] &= (uint8_t)~patch->mask;
+    }
+    return 0;
+}
+
+static int apply_exfat_u32_patch(uint8_t *sector, void *context) {
+    struct exfat_u32_patch *patch = context;
+
+    if (sector == 0 || patch == 0 || patch->offset + 4 > 512) {
+        return -1;
+    }
+    write_le32(sector + patch->offset, patch->value);
+    return 0;
+}
+
+static int apply_exfat_bytes_patch(uint8_t *sector, void *context) {
+    struct exfat_bytes_patch *patch = context;
+
+    if (sector == 0 || patch == 0 || patch->bytes == 0 ||
+        patch->offset + patch->size > 512) {
+        return -1;
+    }
+    copy_bytes(sector + patch->offset, patch->bytes, patch->size);
+    return 0;
+}
+
+static int apply_exfat_delete_entries_patch(uint8_t *sector, void *context) {
+    struct exfat_delete_entries_patch *patch = context;
+
+    if (sector == 0 || patch == 0 ||
+        patch->offset + patch->entry_count * EXFAT_ENTRY_SIZE > 512) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < patch->entry_count; i++) {
+        uint64_t offset = patch->offset + i * EXFAT_ENTRY_SIZE;
+        if ((sector[offset] & 0x80) == 0) {
+            return -1;
+        }
+        sector[offset] &= 0x7f;
+    }
+    return 0;
+}
+
+static void exfat_sector_transaction_begin_for_test(struct exfat_sector_transaction *tx,
+                                                    struct blockfs_mount *mount) {
+    if (tx == 0) {
+        return;
+    }
+    tx->mount = mount;
+    tx->count = 0;
+}
+
+static uint8_t *exfat_sector_transaction_get_for_test(struct exfat_sector_transaction *tx,
+                                                      uint64_t lba) {
+    struct exfat_sector_transaction_entry *entry;
+
+    if (tx == 0 || tx->mount == 0 || tx->mount->block.block_size != 512) {
+        return 0;
+    }
+    for (uint64_t i = 0; i < tx->count; i++) {
+        if (tx->entries[i].lba == lba) {
+            return tx->entries[i].sector;
+        }
+    }
+    if (tx->count >= EXFAT_TEST_TX_MAX_SECTORS) {
+        return 0;
+    }
+
+    entry = &tx->entries[tx->count];
+    entry->lba = lba;
+    if (block_read(tx->mount->block_index, lba, 1, entry->sector) != 0) {
+        return 0;
+    }
+    tx->count++;
+    return entry->sector;
+}
+
+static int exfat_sector_transaction_verify_for_test(struct exfat_sector_transaction *tx) {
+    uint8_t verify[512];
+
+    if (tx == 0 || tx->mount == 0 || tx->mount->block.block_size != sizeof(verify)) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < tx->count; i++) {
+        if (block_read(tx->mount->block_index, tx->entries[i].lba, 1, verify) != 0 ||
+            !raw_bytes_equal(tx->entries[i].sector, verify, sizeof(verify))) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int exfat_sector_transaction_commit_for_test(struct exfat_sector_transaction *tx) {
+    if (tx == 0 || tx->mount == 0) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < tx->count; i++) {
+        if (write_exfat_sector_checked_for_test(tx->mount,
+                                                tx->entries[i].lba,
+                                                tx->entries[i].sector) != 0) {
+            return -1;
+        }
+    }
+    return exfat_sector_transaction_verify_for_test(tx);
+}
+#endif
 
 static int bytes_equal(const uint8_t *data, const char *text, uint64_t len) {
     for (uint64_t i = 0; i < len; i++) {
@@ -961,36 +1153,35 @@ static void dry_run_exfat_create_transaction(struct blockfs_mount *mount) {
 
 static void commit_exfat_create_transaction_for_test(struct blockfs_mount *mount) {
 #ifdef TANGPINGOS_TEST_EXFAT_COMMIT
-    uint8_t bitmap_sector[512];
-    uint8_t fat_sector[512];
-    uint8_t directory_sector[512];
+    struct exfat_sector_transaction tx;
+    uint8_t *bitmap_sector;
+    uint8_t *fat_sector;
+    uint8_t *directory_sector;
 
     mount->exfat.commit_attempted = 1;
+    exfat_sector_transaction_begin_for_test(&tx, mount);
+    bitmap_sector = exfat_sector_transaction_get_for_test(&tx,
+                                                          mount->exfat.transaction_bitmap_lba);
+    fat_sector = exfat_sector_transaction_get_for_test(&tx,
+                                                       mount->exfat.transaction_fat_lba);
+    directory_sector = exfat_sector_transaction_get_for_test(
+        &tx,
+        mount->exfat.transaction_directory_lba);
     if (!mount->exfat.patched_transaction_ready ||
-        block_read(mount->block_index, mount->exfat.transaction_bitmap_lba, 1, bitmap_sector) != 0 ||
-        block_read(mount->block_index, mount->exfat.transaction_fat_lba, 1, fat_sector) != 0 ||
-        block_read(mount->block_index, mount->exfat.transaction_directory_lba, 1,
-                   directory_sector) != 0 ||
+        bitmap_sector == 0 ||
+        fat_sector == 0 ||
+        directory_sector == 0 ||
         apply_exfat_create_transaction_to_sectors(mount, bitmap_sector, fat_sector,
                                                   directory_sector) != 0) {
         return;
     }
 
-    if (block_write(mount->block_index, mount->exfat.transaction_bitmap_lba, 1,
-                    bitmap_sector) != 0 ||
-        block_write(mount->block_index, mount->exfat.transaction_fat_lba, 1,
-                    fat_sector) != 0 ||
-        block_write(mount->block_index, mount->exfat.transaction_directory_lba, 1,
-                    directory_sector) != 0) {
+    if (exfat_sector_transaction_commit_for_test(&tx) != 0) {
         return;
     }
-    mount->exfat.commit_write_count = 3;
+    mount->exfat.commit_write_count = tx.count;
 
-    if (block_read(mount->block_index, mount->exfat.transaction_bitmap_lba, 1, bitmap_sector) != 0 ||
-        block_read(mount->block_index, mount->exfat.transaction_fat_lba, 1, fat_sector) != 0 ||
-        block_read(mount->block_index, mount->exfat.transaction_directory_lba, 1,
-                   directory_sector) != 0 ||
-        verify_patched_exfat_create_transaction(mount, bitmap_sector, fat_sector,
+    if (verify_patched_exfat_create_transaction(mount, bitmap_sector, fat_sector,
                                                 directory_sector) != 0) {
         return;
     }
@@ -1129,7 +1320,7 @@ static int refresh_exfat_test_file_size_for_test(struct blockfs_mount *mount,
     checksum = exfat_entry_set_checksum(file_entry, EXFAT_CREATE_PLAN_REQUIRED_ENTRIES);
     write_le16(file_entry + 2, checksum);
 
-    if (block_write(mount->block_index, entry->directory_lba, 1, sector) != 0) {
+    if (write_exfat_sector_checked_for_test(mount, entry->directory_lba, sector) != 0) {
         return -1;
     }
 
@@ -1180,7 +1371,7 @@ static int rename_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
     checksum = exfat_entry_set_checksum(file_entry, EXFAT_CREATE_PLAN_REQUIRED_ENTRIES);
     write_le16(file_entry + 2, checksum);
 
-    if (block_write(mount->block_index, entry->directory_lba, 1, sector) != 0) {
+    if (write_exfat_sector_checked_for_test(mount, entry->directory_lba, sector) != 0) {
         return -1;
     }
 
@@ -1222,18 +1413,25 @@ static int read_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t 
     uint64_t cluster_size = sectors_per_cluster * sizeof(sector);
     uint64_t bit = (uint64_t)cluster - 2;
     uint64_t byte_index = bit / 8;
-    uint64_t byte_offset_in_bitmap_cluster = byte_index % cluster_size;
-    uint64_t bitmap_cluster_index = byte_index / cluster_size;
-    uint64_t bitmap_sector_index = byte_offset_in_bitmap_cluster / sizeof(sector);
-    uint64_t sector_offset = byte_offset_in_bitmap_cluster % sizeof(sector);
+    uint64_t byte_offset_in_bitmap_cluster;
+    uint64_t bitmap_cluster_index;
+    uint64_t bitmap_sector_index;
+    uint64_t sector_offset;
     uint32_t bitmap_cluster = 0;
     uint64_t lba;
 
     if (mount == 0 || used_out == 0 || !exfat_cluster_valid(mount, cluster) ||
         !mount->exfat.allocation_bitmap_present ||
         cluster_size == 0 ||
-        byte_index >= mount->exfat.allocation_bitmap_size ||
-        exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
+        byte_index >= mount->exfat.allocation_bitmap_size) {
+        return -1;
+    }
+
+    byte_offset_in_bitmap_cluster = byte_index % cluster_size;
+    bitmap_cluster_index = byte_index / cluster_size;
+    bitmap_sector_index = byte_offset_in_bitmap_cluster / sizeof(sector);
+    sector_offset = byte_offset_in_bitmap_cluster % sizeof(sector);
+    if (exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
                               bitmap_cluster_index, &bitmap_cluster) != 0) {
         return -1;
     }
@@ -1250,15 +1448,15 @@ static int read_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t 
 }
 
 static int set_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t cluster) {
-    uint8_t sector[512];
+    struct exfat_bit_patch patch;
     uint64_t sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
-    uint64_t cluster_size = sectors_per_cluster * sizeof(sector);
+    uint64_t cluster_size = sectors_per_cluster * 512;
     uint64_t bit = (uint64_t)cluster - 2;
     uint64_t byte_index = bit / 8;
-    uint64_t byte_offset_in_bitmap_cluster = byte_index % cluster_size;
-    uint64_t bitmap_cluster_index = byte_index / cluster_size;
-    uint64_t bitmap_sector_index = byte_offset_in_bitmap_cluster / sizeof(sector);
-    uint64_t sector_offset = byte_offset_in_bitmap_cluster % sizeof(sector);
+    uint64_t byte_offset_in_bitmap_cluster;
+    uint64_t bitmap_cluster_index;
+    uint64_t bitmap_sector_index;
+    uint64_t sector_offset;
     uint32_t bitmap_cluster = 0;
     uint64_t lba;
 
@@ -1266,32 +1464,42 @@ static int set_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t c
         !mount->exfat.allocation_bitmap_present ||
         cluster_size == 0 ||
         byte_index >= mount->exfat.allocation_bitmap_size ||
-        exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
+        mount->block.block_size != 512) {
+        return -1;
+    }
+
+    byte_offset_in_bitmap_cluster = byte_index % cluster_size;
+    bitmap_cluster_index = byte_index / cluster_size;
+    bitmap_sector_index = byte_offset_in_bitmap_cluster / 512;
+    sector_offset = byte_offset_in_bitmap_cluster % 512;
+    if (exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
                               bitmap_cluster_index, &bitmap_cluster) != 0) {
         return -1;
     }
 
     lba = exfat_cluster_lba(mount, bitmap_cluster);
     if (lba == (uint64_t)-1 ||
-        bitmap_sector_index >= sectors_per_cluster ||
-        block_read(mount->block_index, lba + bitmap_sector_index, 1, sector) != 0) {
+        bitmap_sector_index >= sectors_per_cluster) {
         return -1;
     }
 
-    sector[sector_offset] |= (uint8_t)(1U << (bit % 8));
-    return block_write(mount->block_index, lba + bitmap_sector_index, 1, sector);
+    patch.offset = sector_offset;
+    patch.mask = (uint8_t)(1U << (bit % 8));
+    patch.set = 1;
+    return mutate_exfat_sector_checked_for_test(mount, lba + bitmap_sector_index,
+                                                apply_exfat_bit_patch, &patch);
 }
 
 static int clear_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t cluster) {
-    uint8_t sector[512];
+    struct exfat_bit_patch patch;
     uint64_t sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
-    uint64_t cluster_size = sectors_per_cluster * sizeof(sector);
+    uint64_t cluster_size = sectors_per_cluster * 512;
     uint64_t bit = (uint64_t)cluster - 2;
     uint64_t byte_index = bit / 8;
-    uint64_t byte_offset_in_bitmap_cluster = byte_index % cluster_size;
-    uint64_t bitmap_cluster_index = byte_index / cluster_size;
-    uint64_t bitmap_sector_index = byte_offset_in_bitmap_cluster / sizeof(sector);
-    uint64_t sector_offset = byte_offset_in_bitmap_cluster % sizeof(sector);
+    uint64_t byte_offset_in_bitmap_cluster;
+    uint64_t bitmap_cluster_index;
+    uint64_t bitmap_sector_index;
+    uint64_t sector_offset;
     uint32_t bitmap_cluster = 0;
     uint64_t lba;
 
@@ -1299,38 +1507,57 @@ static int clear_exfat_bitmap_bit_for_test(struct blockfs_mount *mount, uint32_t
         !mount->exfat.allocation_bitmap_present ||
         cluster_size == 0 ||
         byte_index >= mount->exfat.allocation_bitmap_size ||
-        exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
+        mount->block.block_size != 512) {
+        return -1;
+    }
+
+    byte_offset_in_bitmap_cluster = byte_index % cluster_size;
+    bitmap_cluster_index = byte_index / cluster_size;
+    bitmap_sector_index = byte_offset_in_bitmap_cluster / 512;
+    sector_offset = byte_offset_in_bitmap_cluster % 512;
+    if (exfat_resolve_cluster(mount, mount->exfat.allocation_bitmap_cluster, 0,
                               bitmap_cluster_index, &bitmap_cluster) != 0) {
         return -1;
     }
 
     lba = exfat_cluster_lba(mount, bitmap_cluster);
     if (lba == (uint64_t)-1 ||
-        bitmap_sector_index >= sectors_per_cluster ||
-        block_read(mount->block_index, lba + bitmap_sector_index, 1, sector) != 0) {
+        bitmap_sector_index >= sectors_per_cluster) {
         return -1;
     }
 
-    sector[sector_offset] &= (uint8_t)~(1U << (bit % 8));
-    return block_write(mount->block_index, lba + bitmap_sector_index, 1, sector);
+    patch.offset = sector_offset;
+    patch.mask = (uint8_t)(1U << (bit % 8));
+    patch.set = 0;
+    return mutate_exfat_sector_checked_for_test(mount, lba + bitmap_sector_index,
+                                                apply_exfat_bit_patch, &patch);
 }
 
 static int write_exfat_fat_entry_for_test(struct blockfs_mount *mount, uint32_t cluster,
                                           uint32_t value) {
-    uint8_t sector[512];
-    uint64_t fat_byte_offset = (uint64_t)cluster * 4;
-    uint64_t fat_sector = (uint64_t)mount->exfat.fat_offset + fat_byte_offset / sizeof(sector);
-    uint64_t sector_offset = fat_byte_offset % sizeof(sector);
+    struct exfat_u32_patch patch;
+    uint64_t fat_byte_offset;
+    uint64_t fat_sector;
+    uint64_t sector_offset;
 
-    if (mount == 0 || !exfat_cluster_valid(mount, cluster) ||
-        fat_sector >= (uint64_t)mount->exfat.fat_offset + mount->exfat.fat_length ||
-        sector_offset + 4 > sizeof(sector) ||
-        block_read(mount->block_index, fat_sector, 1, sector) != 0) {
+    if (mount == 0 || !exfat_cluster_valid(mount, cluster)) {
         return -1;
     }
 
-    write_le32(sector + sector_offset, value);
-    return block_write(mount->block_index, fat_sector, 1, sector);
+    fat_byte_offset = (uint64_t)cluster * 4;
+    fat_sector = (uint64_t)mount->exfat.fat_offset + fat_byte_offset / 512;
+    sector_offset = fat_byte_offset % 512;
+
+    if (mount == 0 ||
+        fat_sector >= (uint64_t)mount->exfat.fat_offset + mount->exfat.fat_length ||
+        sector_offset + 4 > 512) {
+        return -1;
+    }
+
+    patch.offset = sector_offset;
+    patch.value = value;
+    return mutate_exfat_sector_checked_for_test(mount, fat_sector, apply_exfat_u32_patch,
+                                                &patch);
 }
 
 static int zero_exfat_cluster_for_test(struct blockfs_mount *mount, uint32_t cluster) {
@@ -1343,7 +1570,7 @@ static int zero_exfat_cluster_for_test(struct blockfs_mount *mount, uint32_t clu
     }
     zero_bytes(sector, sizeof(sector));
     for (uint64_t i = 0; i < sectors_per_cluster; i++) {
-        if (block_write(mount->block_index, lba + i, 1, sector) != 0) {
+        if (write_exfat_sector_checked_for_test(mount, lba + i, sector) != 0) {
             return -1;
         }
     }
@@ -1434,7 +1661,7 @@ static int find_exfat_root_directory_slot_for_test(struct blockfs_mount *mount,
 }
 
 static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const char *path) {
-    uint8_t sector[512];
+    struct exfat_bytes_patch directory_patch;
     uint8_t entries[EXFAT_CREATE_PLAN_ENTRY_BYTES];
     char name[VFS_DIRENT_NAME_MAX];
     uint32_t clusters[EXFAT_ALLOC_PLAN_CLUSTER_COUNT];
@@ -1449,12 +1676,12 @@ static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
         find_exfat_root_entry(mount, path) != 0 ||
         find_exfat_free_cluster_run_for_test(mount, clusters) != 0 ||
         find_exfat_root_directory_slot_for_test(mount, &dir_lba, &dir_offset) != 0 ||
-        dir_offset + EXFAT_CREATE_PLAN_ENTRY_BYTES > sizeof(sector)) {
+        dir_offset + EXFAT_CREATE_PLAN_ENTRY_BYTES > 512) {
         return -1;
     }
 
     sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
-    capacity = sectors_per_cluster * sizeof(sector) * EXFAT_ALLOC_PLAN_CLUSTER_COUNT;
+    capacity = sectors_per_cluster * 512 * EXFAT_ALLOC_PLAN_CLUSTER_COUNT;
     if (capacity == 0) {
         return -1;
     }
@@ -1471,13 +1698,11 @@ static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
     }
 
     encode_exfat_file_entries_for_test(entries, name, clusters[0], 0);
-    if (block_read(mount->block_index, dir_lba, 1, sector) != 0) {
-        return -1;
-    }
-    for (uint64_t i = 0; i < EXFAT_CREATE_PLAN_ENTRY_BYTES; i++) {
-        sector[dir_offset + i] = entries[i];
-    }
-    if (block_write(mount->block_index, dir_lba, 1, sector) != 0) {
+    directory_patch.offset = dir_offset;
+    directory_patch.bytes = entries;
+    directory_patch.size = sizeof(entries);
+    if (mutate_exfat_sector_checked_for_test(mount, dir_lba, apply_exfat_bytes_patch,
+                                             &directory_patch) != 0) {
         return -1;
     }
 
@@ -1497,23 +1722,17 @@ static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
 
 static int mark_exfat_test_directory_entries_deleted(struct blockfs_mount *mount,
                                                      struct exfat_root_entry *entry) {
-    uint8_t sector[512];
+    struct exfat_delete_entries_patch patch;
 
     if (mount == 0 || entry == 0 || !entry->writable ||
-        entry->directory_byte_offset + EXFAT_CREATE_PLAN_ENTRY_BYTES > sizeof(sector) ||
-        block_read(mount->block_index, entry->directory_lba, 1, sector) != 0) {
+        entry->directory_byte_offset + EXFAT_CREATE_PLAN_ENTRY_BYTES > 512) {
         return -1;
     }
 
-    for (uint64_t i = 0; i < EXFAT_CREATE_PLAN_REQUIRED_ENTRIES; i++) {
-        uint64_t offset = entry->directory_byte_offset + i * EXFAT_ENTRY_SIZE;
-        if ((sector[offset] & 0x80) == 0) {
-            return -1;
-        }
-        sector[offset] &= 0x7f;
-    }
-
-    return block_write(mount->block_index, entry->directory_lba, 1, sector);
+    patch.offset = entry->directory_byte_offset;
+    patch.entry_count = EXFAT_CREATE_PLAN_REQUIRED_ENTRIES;
+    return mutate_exfat_sector_checked_for_test(mount, entry->directory_lba,
+                                                apply_exfat_delete_entries_patch, &patch);
 }
 
 static int release_exfat_test_cluster_chain(struct blockfs_mount *mount,
@@ -2795,7 +3014,7 @@ static uint64_t blockfs_write_new_file_for_test(struct blockfs_mount *mount,
             return (uint64_t)-1;
         }
         copy_bytes(sector + sector_offset, (const uint8_t *)buffer + written, to_copy);
-        if (block_write(mount->block_index, lba + sector_index, 1, sector) != 0) {
+        if (write_exfat_sector_checked_for_test(mount, lba + sector_index, sector) != 0) {
             return (uint64_t)-1;
         }
         written += to_copy;

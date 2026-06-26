@@ -86,3 +86,5 @@
 - 2026-06-26: 扩展 exFAT 测试创建路径，可在根目录动态分配空目录项和三簇 FAT 链以创建多个受限 uppercase 8.3 文件。
 - 2026-06-26: 新增 exFAT 测试 unlink 路径，可将测试创建文件目录项标记删除并回收对应 bitmap/FAT 三簇链。
 - 2026-06-26: 将 xHCI bulk in/out 传输环扩展为 4 页，避免 USB exFAT 多轮读写测试过早耗尽 BOT 传输槽。
+- 2026-06-26: 抽出 exFAT 测试用 checked sector 写入/修改 helper，让元数据和文件内容写回后立即读回比对。
+- 2026-06-26: 新增 exFAT 测试用小型 sector transaction 对象，将固定 `/NEW.TXT` 的 bitmap/FAT/目录三扇区作为事务提交。
