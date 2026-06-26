@@ -88,3 +88,5 @@
 - 2026-06-26: 将 xHCI bulk in/out 传输环扩展为 4 页，避免 USB exFAT 多轮读写测试过早耗尽 BOT 传输槽。
 - 2026-06-26: 抽出 exFAT 测试用 checked sector 写入/修改 helper，让元数据和文件内容写回后立即读回比对。
 - 2026-06-26: 新增 exFAT 测试用小型 sector transaction 对象，将固定 `/NEW.TXT` 的 bitmap/FAT/目录三扇区作为事务提交。
+- 2026-06-26: 将 exFAT 动态测试文件创建的 bitmap/FAT/目录项更新改为同一个 sector transaction 提交。
+- 2026-06-26: 将 exFAT 测试文件删除的目录项删除和 bitmap/FAT 回收改为同一个 sector transaction 提交。
