@@ -11,6 +11,7 @@ CAT := $(BUILD_DIR)/cat.elf
 INITRD := $(BUILD_DIR)/initrd.tar
 ISO := $(BUILD_DIR)/TangPingOS.iso
 DISK := $(BUILD_DIR)/disk.img
+USB_DISK := $(BUILD_DIR)/usb.img
 
 BREW_PREFIX := $(shell brew --prefix 2>/dev/null)
 LLVM_PREFIX := $(shell brew --prefix llvm 2>/dev/null)
@@ -127,7 +128,7 @@ CAT_OBJECTS := $(patsubst userspace/%.c,$(BUILD_DIR)/userspace/%.o,$(CAT_SOURCES
 INITRD_FILES := $(shell find initrd -type f 2>/dev/null)
 INITRD_PACKED_PATHS := $(patsubst initrd/%,%,$(INITRD_FILES)) bin/shell.elf bin/hello.elf bin/ls.elf bin/cat.elf
 
-.PHONY: all kernel init shell hello ls cat initrd iso disk run test-exception test-page-fault test-user-fault test-user-programs test-exfat-commit clean check-tools check-uefi
+.PHONY: all kernel init shell hello ls cat initrd iso disk usb-disk run test-exception test-page-fault test-user-fault test-user-programs test-exfat-commit clean check-tools check-uefi
 
 all: iso
 
@@ -149,7 +150,9 @@ iso: check-tools $(ISO)
 
 disk: $(DISK)
 
-run: iso disk check-uefi
+usb-disk: $(USB_DISK)
+
+run: iso disk usb-disk check-uefi
 	$(QEMU) \
 		-M q35 \
 		-m 512M \
@@ -159,7 +162,10 @@ run: iso disk check-uefi
 		-no-shutdown \
 		-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
 		-drive file=$(DISK),if=none,id=vd0,format=raw \
+		-drive file=$(USB_DISK),if=none,id=usb0,format=raw \
 		-device qemu-xhci,id=xhci \
+		-device usb-storage,bus=xhci.0,drive=usb0 \
+		-device usb-kbd,bus=xhci.0 \
 		-device virtio-blk-pci,drive=vd0,disable-modern=on,disable-legacy=off
 
 test-exception:
@@ -257,6 +263,9 @@ $(BUILD_DIR):
 
 $(DISK): | $(BUILD_DIR)
 	perl scripts/make_test_disk.pl $@
+
+$(USB_DISK): | $(BUILD_DIR)
+	perl scripts/make_usb_disk.pl $@
 
 check-tools:
 	@command -v $(CC) >/dev/null || { echo "Missing clang. Install with: brew install llvm"; exit 1; }

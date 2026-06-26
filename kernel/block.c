@@ -40,6 +40,21 @@ static void copy_cstr_limited(char *dst, uint64_t dst_len, const char *src) {
     dst[i] = '\0';
 }
 
+static int strings_equal(const char *a, const char *b) {
+    uint64_t i = 0;
+
+    if (a == 0 || b == 0) {
+        return 0;
+    }
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return a[i] == '\0' && b[i] == '\0';
+}
+
 static int block_range_valid(struct block_device *device, uint64_t lba, uint64_t count) {
     if (device == 0 || count == 0 || lba >= device->block_count) {
         return 0;
@@ -105,6 +120,21 @@ int block_get_info(uint64_t index, struct block_device_info *out) {
     out->block_count = device->block_count;
     out->writable = device->writable;
     return 0;
+}
+
+int block_find_by_name(const char *name, uint64_t *index_out) {
+    if (name == 0 || index_out == 0) {
+        return -1;
+    }
+
+    for (uint64_t i = 0; i < device_count; i++) {
+        if (devices[i] != 0 && strings_equal(devices[i]->name, name)) {
+            *index_out = i;
+            return 0;
+        }
+    }
+
+    return -1;
 }
 
 int block_read(uint64_t index, uint64_t lba, uint64_t count, void *buffer) {

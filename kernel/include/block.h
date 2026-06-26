@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define BLOCK_DEVICE_NAME_MAX 32
-#define BLOCK_MAX_DEVICES 8
+#define BLOCK_MAX_DEVICES 16
 
 struct block_device_info {
     char name[BLOCK_DEVICE_NAME_MAX];
@@ -32,6 +32,7 @@ void block_init(void);
 int block_register(struct block_device *device);
 uint64_t block_device_count(void);
 int block_get_info(uint64_t index, struct block_device_info *out);
+int block_find_by_name(const char *name, uint64_t *index_out);
 int block_read(uint64_t index, uint64_t lba, uint64_t count, void *buffer);
 int block_write(uint64_t index, uint64_t lba, uint64_t count, const void *buffer);
 

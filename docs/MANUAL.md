@@ -102,6 +102,15 @@ lists 8.3 short-name files and ASCII long-file-name entries, walks readonly
 subdirectories, and reads file cluster data. It does not yet support Unicode
 long names or FAT32 writes.
 
+`make run` also attaches `build/usb.img` through QEMU xHCI `usb-storage`.
+TangPingOS probes it through USB Mass Storage BOT, verifies a scratch-sector
+SCSI `WRITE(10)` plus `READ(10)` round trip near the end of the test image,
+registers it as `usb0`, scans its MBR partition as `usb0p1`, and mounts the
+test exFAT partition at `/usbdisk` when probing succeeds. This path uses the
+USB/xHCI read/write-sector implementation rather than virtio-blk. The
+`/usbdisk` filesystem mount remains readonly; the write support is currently
+block-device level only.
+
 ## Shell Commands
 
 | Command | Example | Function |
@@ -127,10 +136,10 @@ long names or FAT32 writes.
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
 | `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, memory summary, and xHCI count. |
-| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, operational-register/reset, extended-capability, BIOS/OS handoff, ring setup, first command result, and root-hub port status information. |
+| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, operational-register/reset, extended-capability, BIOS/OS handoff, ring setup, first command result, root-hub port status, QEMU port-reset information, first Address Device result, first device/configuration/interface descriptors, first bulk endpoint pair, Configure Endpoint result, Set Configuration result, and first USB Mass Storage BOT Inquiry/Read Capacity/Read10/Write10 results. |
 | `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
 | `lsblk` | `lsblk` | Lists registered block devices. |
-| `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. |
+| `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. After USB Mass Storage probing succeeds, `blkread <usb0-id> 0` can read the `usb0` device shown by `lsblk`. |
 | `blkwrite` | `blkwrite 2 2 hello` | Writes text into one 512-byte sector of a writable block device. |
 
 Single-path commands such as `cd`, `ls`, `cat`, `stat`, `rm`, `touch`, `edit`,
@@ -147,6 +156,15 @@ When QEMU provides the test disk, `/usb` contains:
 | `/usb/CHAIN.TXT` | Parsed from the QEMU test partition and readable through a two-cluster FAT chain. |
 | `/usb/LATE.TXT` | Parsed from a later root-directory cluster, proving that the root directory chain is followed. |
 | `/usb/DIR/INNER.TXT` | Parsed from a readonly exFAT subdirectory. |
+
+When QEMU provides the USB storage test image, `/usbdisk` contains:
+
+| Path | Function |
+| --- | --- |
+| `/usbdisk/info.txt` | Text metadata for the USB-backed exFAT mount. |
+| `/usbdisk/HELLO.TXT` | Parsed from the USB BOT-backed exFAT partition. |
+| `/usbdisk/CHAIN.TXT` | Read through a two-cluster FAT chain over USB BOT sector reads. |
+| `/usbdisk/LATE.TXT` | Parsed from the second root-directory cluster over USB BOT reads. |
 
 The same QEMU disk also contains a FAT32 sample mounted at `/boot`:
 
@@ -418,7 +436,10 @@ parsing. The FAT32 partition has short-name root files `README.TXT` and
 `KERNEL.TXT`, an ASCII long-name file `very long filename.txt`, plus an
 `EFI/BOOT/BOOTX64.EFI` subdirectory sample. The kernel scans PCI config space,
 initializes the virtqueue, registers the disk as `vd0`, parses the MBR, and
-registers `vd0p1` and `vd0p2`.
+registers `vd0p1` and `vd0p2`. `make run` also builds `build/usb.img`, attaches
+it as QEMU xHCI `usb-storage`, runs a scratch-sector USB BOT `WRITE(10)`
+readback check, registers the USB disk as `usb0`, parses its MBR partition as
+`usb0p1`, and mounts that exFAT partition at `/usbdisk`.
 
 Useful checks in the shell:
 
@@ -512,8 +533,28 @@ Expected constraints on real hardware:
   device context base address array for QEMU xHCI, then start the controller
   and issue the first `Enable Slot` command. It can also scan xHCI root-hub
   `PORTSC` registers to report connected, enabled, powered, and first-port
-  speed/link-state information. It does not yet reset ports, address devices,
-  enumerate USB descriptors, or talk to USB storage.
+  speed/link-state information. QEMU runs now attach small `usb-storage` and
+  `usb-kbd` test devices to the xHCI controller, and TangPingOS can reset the
+  first connected QEMU xHCI port. TangPingOS can also build the initial xHCI
+  input context for that port, issue `Address Device`, and report the assigned
+  USB address and slot state. It can now issue a first EP0
+  `GET_DESCRIPTOR(Device)` request and report the device descriptor's
+  vendor/product/class fields. It can also issue a first
+  `GET_DESCRIPTOR(Configuration)` request and report the configuration total
+  length, interface count, first interface class/subclass/protocol, and the
+  first bulk-in/bulk-out endpoint addresses. It can now allocate bulk transfer
+  rings, build xHCI endpoint contexts for the first bulk-in/bulk-out pair, and
+  issue the first `Configure Endpoint` command. It can now send USB
+  `SET_CONFIGURATION(1)` and issue a first USB Mass Storage BOT/SCSI `INQUIRY`
+  command over the configured bulk endpoints. It can also issue SCSI
+  `READ CAPACITY(10)`, `READ(10)`, and `WRITE(10)` over BOT to prove the QEMU
+  USB-storage device's block count/block size and sector I/O path. The
+  successful USB-storage path is exposed as block device `usb0`, so `lsblk`
+  can list it and `blkread`/`blkwrite` can access sectors through the generic
+  block syscall path. TangPingOS also scans `usb0` for MBR partitions and
+  mounts the QEMU USB exFAT test partition at `/usbdisk` when `usb0p1` is
+  available. The `/usbdisk` filesystem is still readonly, so this is not yet
+  exFAT file creation on USB. It does not yet use USB HID keyboard input.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.

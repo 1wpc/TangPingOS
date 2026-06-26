@@ -133,3 +133,7 @@ void partition_init(void) {
         scan_mbr(i);
     }
 }
+
+void partition_scan_device(uint64_t block_index) {
+    scan_mbr(block_index);
+}

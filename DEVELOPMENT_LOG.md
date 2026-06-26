@@ -69,3 +69,14 @@
 - 2026-06-22: 新增 xHCI command/event ring、ERST 和 DCBAA 基础配置，`usb` 可显示 ring DMA 地址。
 - 2026-06-22: 新增 xHCI Enable Slot 命令发送与 completion event 轮询，`usb` 可显示 slot id 和 completion code。
 - 2026-06-22: 新增 xHCI root hub port 扫描，`usb` 可显示连接端口、速度和 PORTSC 状态。
+- 2026-06-22: QEMU 默认挂载 usb-storage 与 usb-kbd 测试设备，并新增首个已连接 xHCI 端口 reset 状态展示。
+- 2026-06-22: 新增 xHCI Address Device 最小流程，`usb` 可显示首个设备的地址分配结果和 slot state。
+- 2026-06-22: 新增 EP0 `GET_DESCRIPTOR(Device)` 控制传输，`usb` 可显示首个 USB 设备的 vendor/product/class。
+- 2026-06-22: 新增 EP0 `GET_DESCRIPTOR(Configuration)` 控制传输，`usb` 可显示首个 USB interface 的 class/subclass/protocol。
+- 2026-06-22: 新增 USB endpoint descriptor 解析，`usb` 可显示首个 bulk-in/bulk-out 端点地址。
+- 2026-06-22: 新增 xHCI `Configure Endpoint` 最小流程，为首个 USB Mass Storage 设备配置 bulk-in/bulk-out endpoint context。
+- 2026-06-22: 新增 USB `SET_CONFIGURATION(1)` 与 Mass Storage BOT/SCSI `INQUIRY` 最小探测流程。
+- 2026-06-22: 新增 USB Mass Storage BOT/SCSI `READ CAPACITY(10)` 与 `READ(10)` LBA0 最小读扇区流程。
+- 2026-06-22: 将 USB Mass Storage 读扇区路径注册为只读块设备 `usb0`，支持 `lsblk`/`blkread` 访问。
+- 2026-06-26: 新增 USB exFAT 测试镜像生成、`usb0p1` 分区扫描与 `/usbdisk` USB BOT 挂载验证。
+- 2026-06-26: 新增 USB Mass Storage BOT/SCSI `WRITE(10)` scratch 扇区写入与读回验证，`usb0` 可在自检通过后作为可写块设备注册。
