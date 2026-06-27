@@ -18,9 +18,10 @@ programs.
   `unlink`, `spawn`, path-based VFS mount dispatch, mount-table queries, and
   basic system information syscalls.
 - Provides a block-device layer with in-memory `ramblk0`, QEMU virtio-blk
-  `vd0`, MBR primary partition devices such as `vd0p1` and `vd0p2`, a readonly
-  exFAT test mount at `/usb`, and a readonly FAT32 boot-partition sample mounted
-  at `/boot`.
+  `vd0`, MBR primary partition devices such as `vd0p1` and `vd0p2`, an exFAT
+  test mount at `/usb` with guarded write-path validation builds, a USB
+  Mass Storage exFAT test mount at `/usbdisk` in QEMU, and readonly FAT32
+  boot-partition samples mounted at `/boot` and `/usbboot`.
 - Includes an interactive shell plus standalone `/bin/hello.elf`,
   `/bin/ls.elf`, and `/bin/cat.elf` user programs.
 
@@ -88,6 +89,7 @@ build/cat.elf
 build/initrd.tar
 build/TangPingOS.iso
 build/disk.img
+build/usb.img
 ```
 
 Current startup chain:

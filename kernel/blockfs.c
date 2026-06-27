@@ -10,6 +10,7 @@
 #define BLOCKFS_MAX_ROOT_ENTRIES BLOCKFS_MAX_EXFAT_ROOT_ENTRIES
 #define EXFAT_ENTRY_SIZE 32
 #define EXFAT_ALLOC_PLAN_CLUSTER_COUNT 3
+#define EXFAT_TEST_FILE_DEFAULT_CLUSTERS EXFAT_ALLOC_PLAN_CLUSTER_COUNT
 #define EXFAT_CREATE_PLAN_NAME "NEW.TXT"
 #define EXFAT_CREATE_PLAN_NAME_CHARS 7
 #define EXFAT_CREATE_PLAN_MAX_NAME_CHARS 15
@@ -152,7 +153,9 @@ static int refresh_exfat_test_file_size_for_test(struct blockfs_mount *mount,
                                                  struct exfat_root_entry *entry,
                                                  uint64_t size);
 static int rename_exfat_test_file_for_test(struct blockfs_mount *mount, const char *path);
-static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const char *path);
+static int create_exfat_test_file_with_clusters_for_test(struct blockfs_mount *mount,
+                                                         const char *path,
+                                                         uint64_t requested_clusters);
 static int unlink_exfat_test_file_for_test(struct blockfs_mount *mount, const char *path);
 #endif
 static struct exfat_root_entry *find_exfat_root_entry(struct blockfs_mount *mount, const char *path);
@@ -1556,11 +1559,38 @@ static int zero_exfat_cluster_for_test(struct blockfs_mount *mount, uint32_t clu
     return 0;
 }
 
+static uint64_t exfat_test_cluster_count_for_size(struct blockfs_mount *mount, uint64_t size) {
+    uint64_t sectors_per_cluster = mount == 0
+        ? 0
+        : one_shifted_by(mount->exfat.sectors_per_cluster_shift);
+    uint64_t cluster_size = sectors_per_cluster * 512;
+    uint64_t requested_clusters;
+
+    if (cluster_size == 0) {
+        return 0;
+    }
+    if (size == 0) {
+        return EXFAT_TEST_FILE_DEFAULT_CLUSTERS;
+    }
+
+    if (size > UINT64_MAX - (cluster_size - 1)) {
+        return 0;
+    }
+    requested_clusters = (size + cluster_size - 1) / cluster_size;
+    if (requested_clusters == 0 ||
+        requested_clusters > EXFAT_ALLOC_PLAN_CLUSTER_COUNT) {
+        return 0;
+    }
+    return requested_clusters;
+}
+
 static int find_exfat_free_cluster_run_for_test(struct blockfs_mount *mount,
-                                                uint32_t *clusters) {
+                                                uint32_t *clusters,
+                                                uint64_t requested_clusters) {
     uint64_t run = 0;
 
-    if (mount == 0 || clusters == 0) {
+    if (mount == 0 || clusters == 0 || requested_clusters == 0 ||
+        requested_clusters > EXFAT_ALLOC_PLAN_CLUSTER_COUNT) {
         return -1;
     }
     for (uint32_t cluster = 2; cluster < mount->exfat.cluster_count + 2; cluster++) {
@@ -1571,7 +1601,7 @@ static int find_exfat_free_cluster_run_for_test(struct blockfs_mount *mount,
         }
         if (!used && exfat_read_fat_entry(mount, cluster, &next) == 0 && next == 0) {
             clusters[run++] = cluster;
-            if (run >= EXFAT_ALLOC_PLAN_CLUSTER_COUNT) {
+            if (run >= requested_clusters) {
                 return 0;
             }
         } else {
@@ -1639,7 +1669,9 @@ static int find_exfat_root_directory_slot_for_test(struct blockfs_mount *mount,
     return -1;
 }
 
-static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const char *path) {
+static int create_exfat_test_file_with_clusters_for_test(struct blockfs_mount *mount,
+                                                         const char *path,
+                                                         uint64_t requested_clusters) {
     struct exfat_sector_transaction tx;
     struct exfat_bytes_patch directory_patch;
     uint8_t entries[EXFAT_CREATE_PLAN_ENTRY_BYTES];
@@ -1652,21 +1684,23 @@ static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
     struct exfat_root_entry *entry;
 
     if (mount == 0 || path == 0 || !mount->exfat.commit_ready ||
+        requested_clusters == 0 ||
+        requested_clusters > EXFAT_ALLOC_PLAN_CLUSTER_COUNT ||
         parse_exfat_test_short_name(path, name, sizeof(name)) != 0 ||
         find_exfat_root_entry(mount, path) != 0 ||
-        find_exfat_free_cluster_run_for_test(mount, clusters) != 0 ||
+        find_exfat_free_cluster_run_for_test(mount, clusters, requested_clusters) != 0 ||
         find_exfat_root_directory_slot_for_test(mount, &dir_lba, &dir_offset) != 0 ||
         dir_offset + EXFAT_CREATE_PLAN_ENTRY_BYTES > 512) {
         return -1;
     }
 
     sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
-    capacity = sectors_per_cluster * 512 * EXFAT_ALLOC_PLAN_CLUSTER_COUNT;
+    capacity = sectors_per_cluster * 512 * requested_clusters;
     if (capacity == 0) {
         return -1;
     }
 
-    for (uint64_t i = 0; i < EXFAT_ALLOC_PLAN_CLUSTER_COUNT; i++) {
+    for (uint64_t i = 0; i < requested_clusters; i++) {
         if (zero_exfat_cluster_for_test(mount, clusters[i]) != 0) {
             return -1;
         }
@@ -1674,12 +1708,12 @@ static int create_exfat_test_file_for_test(struct blockfs_mount *mount, const ch
 
     encode_exfat_file_entries_for_test(entries, name, clusters[0], 0);
     exfat_sector_transaction_begin_for_test(&tx, mount);
-    for (uint64_t i = 0; i < EXFAT_ALLOC_PLAN_CLUSTER_COUNT; i++) {
+    for (uint64_t i = 0; i < requested_clusters; i++) {
         if (set_exfat_bitmap_bit_in_transaction_for_test(&tx, clusters[i]) != 0 ||
             write_exfat_fat_entry_in_transaction_for_test(
                 &tx,
                 clusters[i],
-                i + 1 < EXFAT_ALLOC_PLAN_CLUSTER_COUNT ? clusters[i + 1] : 0xffffffffU) != 0) {
+                i + 1 < requested_clusters ? clusters[i + 1] : 0xffffffffU) != 0) {
             return -1;
         }
     }
@@ -1770,6 +1804,79 @@ static int release_exfat_test_cluster_chain_in_transaction(
             return -1;
         }
     }
+    return 0;
+}
+
+static int extend_exfat_test_file_for_test(struct blockfs_mount *mount,
+                                           struct exfat_root_entry *entry,
+                                           uint64_t required_clusters) {
+    struct exfat_sector_transaction tx;
+    uint32_t current_clusters[EXFAT_ALLOC_PLAN_CLUSTER_COUNT];
+    uint32_t new_clusters[EXFAT_ALLOC_PLAN_CLUSTER_COUNT];
+    uint64_t current_count = 0;
+    uint64_t add_count;
+    uint64_t sectors_per_cluster;
+    uint64_t new_capacity;
+
+    if (mount == 0 || entry == 0 || !entry->writable ||
+        required_clusters == 0 ||
+        required_clusters > EXFAT_ALLOC_PLAN_CLUSTER_COUNT ||
+        collect_exfat_test_cluster_chain_for_test(
+            mount,
+            entry,
+            current_clusters,
+            &current_count) != 0 ||
+        current_count == 0 ||
+        current_count > required_clusters) {
+        return -1;
+    }
+    if (current_count == required_clusters) {
+        return 0;
+    }
+
+    add_count = required_clusters - current_count;
+    if (find_exfat_free_cluster_run_for_test(mount, new_clusters, add_count) != 0) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < add_count; i++) {
+        if (zero_exfat_cluster_for_test(mount, new_clusters[i]) != 0) {
+            return -1;
+        }
+    }
+
+    exfat_sector_transaction_begin_for_test(&tx, mount);
+    if (write_exfat_fat_entry_in_transaction_for_test(
+            &tx,
+            current_clusters[current_count - 1],
+            new_clusters[0]) != 0) {
+        return -1;
+    }
+    for (uint64_t i = 0; i < add_count; i++) {
+        if (set_exfat_bitmap_bit_in_transaction_for_test(&tx, new_clusters[i]) != 0 ||
+            write_exfat_fat_entry_in_transaction_for_test(
+                &tx,
+                new_clusters[i],
+                i + 1 < add_count ? new_clusters[i + 1] : 0xffffffffU) != 0) {
+            return -1;
+        }
+    }
+    if (exfat_sector_transaction_commit_for_test(&tx) != 0) {
+        return -1;
+    }
+
+    sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
+    new_capacity = sectors_per_cluster * 512 * required_clusters;
+    if (new_capacity == 0) {
+        return -1;
+    }
+    entry->capacity = new_capacity;
+
+    log_info("exFAT test file extended: source=%s path=/%s clusters=%u->%u capacity=%u\n",
+             mount->source,
+             entry->name,
+             current_count,
+             required_clusters,
+             new_capacity);
     return 0;
 }
 
@@ -3009,13 +3116,25 @@ static uint64_t blockfs_write_new_file_for_test(struct blockfs_mount *mount,
     uint64_t written = 0;
     uint64_t sectors_per_cluster = one_shifted_by(mount->exfat.sectors_per_cluster_shift);
     uint64_t cluster_size = sectors_per_cluster * sizeof(sector);
-    uint64_t capacity = entry->capacity;
+    uint64_t end_offset;
+    uint64_t required_clusters;
 
     if (mount == 0 || entry == 0 || buffer == 0 || !mount->exfat.commit_ready ||
         !entry->writable ||
         !chars_equal(entry->parent, "/") ||
-        cluster_size == 0 || offset > capacity || buffer_len > capacity - offset) {
+        cluster_size == 0 ||
+        offset > UINT64_MAX - buffer_len) {
         return (uint64_t)-1;
+    }
+
+    end_offset = offset + buffer_len;
+    if (end_offset > entry->capacity) {
+        required_clusters = exfat_test_cluster_count_for_size(mount, end_offset);
+        if (required_clusters == 0 ||
+            extend_exfat_test_file_for_test(mount, entry, required_clusters) != 0 ||
+            end_offset > entry->capacity) {
+            return (uint64_t)-1;
+        }
     }
 
     while (written < buffer_len) {
@@ -3064,7 +3183,22 @@ static uint64_t blockfs_write(const char *path, uint64_t offset,
     }
     entry = find_exfat_root_entry(mount, path);
     if (entry == 0) {
-        return (uint64_t)-1;
+        uint64_t requested_clusters;
+        if (offset != 0) {
+            return (uint64_t)-1;
+        }
+        requested_clusters = exfat_test_cluster_count_for_size(mount, buffer_len);
+        if (requested_clusters == 0 ||
+            create_exfat_test_file_with_clusters_for_test(
+                mount,
+                path,
+                requested_clusters) != 0) {
+            return (uint64_t)-1;
+        }
+        entry = find_exfat_root_entry(mount, path);
+        if (entry == 0) {
+            return (uint64_t)-1;
+        }
     }
     return blockfs_write_new_file_for_test(mount, entry, offset, buffer, buffer_len);
 }
@@ -3081,11 +3215,16 @@ static int blockfs_truncate(const char *path, uint64_t size, void *context) {
     }
     entry = find_exfat_root_entry(mount, path);
     if (entry == 0) {
-        if (size != 0) {
+        uint64_t requested_clusters =
+            exfat_test_cluster_count_for_size(mount, size);
+        if (requested_clusters == 0) {
             return -1;
         }
         if (rename_exfat_test_file_for_test(mount, path) != 0 &&
-            create_exfat_test_file_for_test(mount, path) != 0) {
+            create_exfat_test_file_with_clusters_for_test(
+                mount,
+                path,
+                requested_clusters) != 0) {
             return -1;
         }
         entry = find_exfat_root_entry(mount, path);

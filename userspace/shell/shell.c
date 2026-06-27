@@ -2,7 +2,7 @@
 
 #define SHELL_LINE_MAX 128
 #define SHELL_PATH_MAX 96
-#define USB_TEST_PARTITION_BLOCKS 30720
+#define USB_TEST_PARTITION_BLOCKS 22528
 #define USB_TEST_SCRATCH_LBA (USB_TEST_PARTITION_BLOCKS - 1)
 
 #define sys_write tpos_write
@@ -14,6 +14,7 @@
 #define sys_read tpos_read
 #define sys_close tpos_close
 #define sys_getdents tpos_getdents
+#define sys_write_file tpos_write_file
 #define sys_dup2 tpos_dup2
 #define sys_lseek tpos_lseek
 #define sys_unlink tpos_unlink
@@ -1182,6 +1183,18 @@ static void cmd_usb(void) {
         write_u64_decimal(info.xhci_first_connected_powered);
         write_cstr("\nfirst link state: ");
         write_u64_decimal(info.xhci_first_connected_link_state);
+        write_cstr("\nsecond connected port: ");
+        write_u64_decimal(info.xhci_second_connected_port);
+        write_cstr("\nsecond portsc: ");
+        write_u64_hex(info.xhci_second_connected_portsc);
+        write_cstr("\nsecond speed: ");
+        write_u64_decimal(info.xhci_second_connected_speed);
+        write_cstr("\nsecond enabled: ");
+        write_u64_decimal(info.xhci_second_connected_enabled);
+        write_cstr("\nsecond powered: ");
+        write_u64_decimal(info.xhci_second_connected_powered);
+        write_cstr("\nsecond link state: ");
+        write_u64_decimal(info.xhci_second_connected_link_state);
         write_cstr("\nport1 portsc: ");
         write_u64_hex(info.xhci_port1_portsc);
         write_cstr("\nport reset attempted: ");
@@ -2911,6 +2924,64 @@ static void run_usb_mount_self_test(char *buffer, uint64_t buffer_len) {
     write_literal(ok, sizeof(ok) - 1);
 }
 
+static void run_usb_fat32_mount_self_test(char *buffer, uint64_t buffer_len) {
+    static const char ok[] = "shell.elf: USB FAT32 mount read ok\n";
+    static const char fail[] = "shell.elf: USB FAT32 mount read failed\n";
+    static const char info_prefix[] = "TangPingOS block-backed mount";
+    static const char info_fs[] = "detected_fs: fat32";
+    static const char info_label[] = "volume_label: USBBOOT";
+    static const char readme_path[] = "/usbboot/README.TXT";
+    static const char bootx64_path[] = "/usbboot/EFI/BOOT/BOOTX64.EFI";
+    static const char long_name_path[] = "/usbboot/usb long filename.txt";
+    static const char readme_content[] = "Hello from USB FAT32 boot partition.\n";
+    static const char bootx64_content[] = "TangPingOS can walk USB FAT32 EFI/BOOT.\n";
+    static const char long_name_content[] = "USB FAT32 long file names are visible now.\n";
+    uint64_t fd = sys_open("/usbboot/info.txt");
+    uint64_t read_len = 0;
+
+    if (fd == (uint64_t)-1) {
+        return;
+    }
+    if (buffer_len < 512) {
+        sys_close(fd);
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(33);
+    }
+    while (read_len + 1 < buffer_len) {
+        uint64_t chunk = sys_read(fd, buffer + read_len, buffer_len - 1 - read_len);
+        if (chunk == (uint64_t)-1) {
+            sys_close(fd);
+            write_literal(fail, sizeof(fail) - 1);
+            sys_exit(33);
+        }
+        if (chunk == 0) {
+            break;
+        }
+        read_len += chunk;
+    }
+    sys_close(fd);
+    if (read_len == 0) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(33);
+    }
+    buffer[read_len] = '\0';
+    if (!starts_with(buffer, info_prefix) ||
+        !contains_text(buffer, info_fs) ||
+        !contains_text(buffer, info_label)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(33);
+    }
+
+    if (!read_file_equals(readme_path, buffer, buffer_len, readme_content) ||
+        !read_file_equals(bootx64_path, buffer, buffer_len, bootx64_content) ||
+        !read_file_equals(long_name_path, buffer, buffer_len, long_name_content)) {
+        write_literal(fail, sizeof(fail) - 1);
+        sys_exit(33);
+    }
+
+    write_literal(ok, sizeof(ok) - 1);
+}
+
 static void run_usb_block_write_self_test(char *buffer, uint64_t buffer_len) {
     static const char ok[] = "shell.elf: USB BOT block write ok\n";
     static const char fail[] = "shell.elf: USB BOT block write failed\n";
@@ -2968,15 +3039,75 @@ static int verify_exfat_vfs_unlink_path(const char *path) {
     return 0;
 }
 
+static void fill_exfat_growth_pattern(char *buffer, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) {
+        buffer[i] = (char)('A' + (i % 26));
+    }
+}
+
+static int verify_exfat_growth_pattern(const char *buffer, uint64_t len) {
+    for (uint64_t i = 0; i < len; i++) {
+        if (buffer[i] != (char)('A' + (i % 26))) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int verify_exfat_direct_write_growth_path(const char *path,
+                                                 char *buffer,
+                                                 uint64_t buffer_len) {
+    uint64_t grow_len = 5000;
+    uint64_t fd;
+    uint64_t read_len;
+    uint64_t total_read = 0;
+
+    if (buffer_len < grow_len + 1) {
+        return -1;
+    }
+    (void)sys_unlink(path);
+    fill_exfat_growth_pattern(buffer, grow_len);
+    if (sys_write_file(path, 0, buffer, grow_len) != grow_len) {
+        return -1;
+    }
+
+    fd = sys_open(path);
+    if (fd == (uint64_t)-1) {
+        return -1;
+    }
+    while (total_read < grow_len) {
+        read_len = sys_read(fd, buffer + total_read, grow_len - total_read);
+        if (read_len == (uint64_t)-1) {
+            sys_close(fd);
+            return -1;
+        }
+        if (read_len == 0) {
+            break;
+        }
+        total_read += read_len;
+    }
+    sys_close(fd);
+    if (total_read != grow_len ||
+        verify_exfat_growth_pattern(buffer, grow_len) != 0) {
+        return -1;
+    }
+
+    return verify_exfat_vfs_unlink_path(path);
+}
+
 static void run_exfat_vfs_write_self_test(char *buffer, uint64_t buffer_len) {
     static const char ok[] = "shell.elf: exFAT VFS write ok\n";
     static const char usb_ok[] = "shell.elf: USB exFAT VFS write ok\n";
+    static const char wrap_ok[] = "shell.elf: USB xHCI ring wrap ok\n";
     static const char fail[] = "shell.elf: exFAT VFS write failed\n";
     static const char usb_fail[] = "shell.elf: USB exFAT VFS write failed\n";
+    static const char wrap_fail[] = "shell.elf: USB xHCI ring wrap failed\n";
     static const char path[] = "/usb/NOTE.TXT";
     static const char second_path[] = "/usb/LOG.TXT";
+    static const char grow_path[] = "/usb/GROW.TXT";
     static const char usb_path[] = "/usbdisk/USB.TXT";
     static const char usb_second_path[] = "/usbdisk/TWO.TXT";
+    static const char usb_grow_path[] = "/usbdisk/GROW.TXT";
     static const char content[] = "TangPingOS wrote NOTE.TXT through VFS.\n";
     static const char second_content[] = "TangPingOS created LOG.TXT dynamically.\n";
     static const char second_recreated[] = "TangPingOS recreated LOG.TXT after unlink.\n";
@@ -2988,7 +3119,8 @@ static void run_exfat_vfs_write_self_test(char *buffer, uint64_t buffer_len) {
     if (verify_exfat_vfs_write_path(path, content, buffer, buffer_len) != 0 ||
         verify_exfat_vfs_write_path(second_path, second_content, buffer, buffer_len) != 0 ||
         verify_exfat_vfs_unlink_path(second_path) != 0 ||
-        verify_exfat_vfs_write_path(second_path, second_recreated, buffer, buffer_len) != 0) {
+        verify_exfat_vfs_write_path(second_path, second_recreated, buffer, buffer_len) != 0 ||
+        verify_exfat_direct_write_growth_path(grow_path, buffer, buffer_len) != 0) {
         write_literal(fail, sizeof(fail) - 1);
         sys_exit(26);
     }
@@ -3002,11 +3134,20 @@ static void run_exfat_vfs_write_self_test(char *buffer, uint64_t buffer_len) {
     if (verify_exfat_vfs_write_path(usb_path, usb_content, buffer, buffer_len) != 0 ||
         verify_exfat_vfs_write_path(usb_second_path, usb_second_content, buffer, buffer_len) != 0 ||
         verify_exfat_vfs_unlink_path(usb_second_path) != 0 ||
-        verify_exfat_vfs_write_path(usb_second_path, usb_second_recreated, buffer, buffer_len) != 0) {
+        verify_exfat_vfs_write_path(usb_second_path, usb_second_recreated, buffer, buffer_len) != 0 ||
+        verify_exfat_direct_write_growth_path(usb_grow_path, buffer, buffer_len) != 0) {
         write_literal(usb_fail, sizeof(usb_fail) - 1);
         sys_exit(31);
     }
     write_literal(usb_ok, sizeof(usb_ok) - 1);
+
+    for (uint64_t i = 0; i < 360; i++) {
+        if (usbtestwrite_run(buffer, buffer_len, 0) != 0) {
+            write_literal(wrap_fail, sizeof(wrap_fail) - 1);
+            sys_exit(32);
+        }
+    }
+    write_literal(wrap_ok, sizeof(wrap_ok) - 1);
 }
 #endif
 
@@ -3077,6 +3218,7 @@ void _start(void) {
     run_block_mount_self_test(heap, 8192);
     run_fat32_mount_self_test(heap, 8192);
     run_usb_mount_self_test(heap, 8192);
+    run_usb_fat32_mount_self_test(heap, 8192);
     run_usb_block_write_self_test(heap, 8192);
 #ifdef TANGPINGOS_TEST_EXFAT_COMMIT
     run_exfat_vfs_write_self_test(heap, 8192);

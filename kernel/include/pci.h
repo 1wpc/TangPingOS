@@ -95,6 +95,12 @@ struct pci_xhci_info {
     uint64_t first_connected_enabled;
     uint64_t first_connected_powered;
     uint64_t first_connected_link_state;
+    uint64_t second_connected_port;
+    uint64_t second_connected_portsc;
+    uint64_t second_connected_speed;
+    uint64_t second_connected_enabled;
+    uint64_t second_connected_powered;
+    uint64_t second_connected_link_state;
     uint64_t port1_portsc;
     uint64_t port_reset_attempted;
     uint64_t port_reset_ok;

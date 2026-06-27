@@ -106,6 +106,13 @@ static volatile uint8_t *xhci_regs;
 static uint64_t xhci_bulk_out_next_trb;
 static uint64_t xhci_bulk_in_next_trb;
 static uint64_t xhci_next_transfer_event;
+static uint64_t xhci_bulk_out_cycle;
+static uint64_t xhci_bulk_in_cycle;
+static uint64_t xhci_transfer_event_cycle;
+static uint64_t xhci_bulk_out_wraps;
+static uint64_t xhci_bulk_in_wraps;
+static uint64_t xhci_transfer_event_wraps;
+static uint64_t xhci_bot_ring_ready;
 static uint64_t xhci_bot_next_tag;
 static struct block_device xhci_usb_storage_block;
 static int xhci_usb_storage_registered;
@@ -307,6 +314,140 @@ static int xhci_wait_transfer_event(volatile uint8_t *regs,
             xhci_info.erdp_value = mmio_read64(ir0, XHCI_IR_ERDP);
             return ((event_ring[trb_index + 2] >> 24) == XHCI_COMPLETION_SUCCESS) ? 0 : -1;
         }
+    }
+
+    return -1;
+}
+
+static void xhci_mark_transfer_trb_inactive(uint64_t ring_phys,
+                                            uint64_t trb_index,
+                                            uint64_t inactive_cycle) {
+    volatile uint32_t *ring;
+
+    if (ring_phys == 0 || trb_index >= XHCI_TRANSFER_RING_TRBS - 1) {
+        return;
+    }
+
+    ring = (volatile uint32_t *)phys_to_virt(ring_phys);
+    uint64_t base = trb_index * 4;
+    ring[base + 0] = 0;
+    ring[base + 1] = 0;
+    ring[base + 2] = 0;
+    ring[base + 3] = inactive_cycle ? XHCI_TRB_CYCLE : 0;
+    __sync_synchronize();
+}
+
+static void xhci_advance_transfer_ring(uint64_t *next_trb,
+                                       uint64_t *producer_cycle,
+                                       uint64_t *wraps,
+                                       const char *name) {
+    if (next_trb == 0 || producer_cycle == 0 || wraps == 0) {
+        return;
+    }
+
+    (*next_trb)++;
+    if (*next_trb < XHCI_TRANSFER_RING_TRBS - 1) {
+        return;
+    }
+
+    *next_trb = 0;
+    *producer_cycle ^= 1;
+    (*wraps)++;
+    log_info("xHCI %s transfer ring wrapped: cycle=%u wraps=%u\n",
+             name,
+             *producer_cycle,
+             *wraps);
+}
+
+static void xhci_advance_transfer_event(volatile uint8_t *regs) {
+    if (regs == 0 || xhci_info.runtime_offset == 0) {
+        return;
+    }
+
+    xhci_next_transfer_event++;
+    if (xhci_next_transfer_event >= XHCI_EVENT_RING_SEGMENT_TRBS) {
+        xhci_next_transfer_event = 0;
+        xhci_transfer_event_cycle ^= 1;
+        xhci_transfer_event_wraps++;
+        log_info("xHCI transfer event ring wrapped: cycle=%u wraps=%u\n",
+                 xhci_transfer_event_cycle,
+                 xhci_transfer_event_wraps);
+    }
+}
+
+static int xhci_wait_next_transfer_event(volatile uint8_t *regs,
+                                         uint64_t expected_slot_id,
+                                         uint64_t *completion_code,
+                                         uint64_t *event_type_out,
+                                         uint64_t *event_trb0,
+                                         uint64_t *event_trb1,
+                                         uint64_t *event_trb2,
+                                         uint64_t *event_trb3) {
+    volatile uint8_t *rt;
+    volatile uint8_t *ir0;
+    volatile uint32_t *event_ring;
+
+    if (regs == 0 || xhci_info.runtime_offset == 0 ||
+        xhci_info.event_ring_phys == 0 ||
+        xhci_next_transfer_event >= XHCI_EVENT_RING_SEGMENT_TRBS) {
+        return -1;
+    }
+
+    rt = regs + xhci_info.runtime_offset;
+    ir0 = rt + XHCI_RUNTIME_IR0_OFFSET;
+    event_ring = (volatile uint32_t *)phys_to_virt(xhci_info.event_ring_phys);
+
+    for (uint64_t spin = 0; spin < XHCI_POLL_LIMIT; spin++) {
+        uint64_t trb_index = xhci_next_transfer_event * 4;
+        uint32_t control = event_ring[trb_index + 3];
+        if ((control & XHCI_TRB_CYCLE) != xhci_transfer_event_cycle) {
+            continue;
+        }
+
+        uint64_t event_type = (control >> XHCI_TRB_TYPE_SHIFT) & 0x3fU;
+        uint64_t event_slot_id = control >> 24;
+        if (event_type != XHCI_TRANSFER_EVENT_TYPE ||
+            event_slot_id != expected_slot_id) {
+            uint64_t next_event = xhci_next_transfer_event + 1;
+            if (next_event >= XHCI_EVENT_RING_SEGMENT_TRBS) {
+                next_event = 0;
+            }
+            xhci_info.erdp_value =
+                xhci_info.event_ring_phys + XHCI_TRB_SIZE * next_event;
+            mmio_write64(ir0, XHCI_IR_ERDP, xhci_info.erdp_value | XHCI_ERDP_EHB);
+            xhci_info.erdp_value = mmio_read64(ir0, XHCI_IR_ERDP);
+            xhci_advance_transfer_event(regs);
+            continue;
+        }
+
+        if (event_trb0 != 0) {
+            *event_trb0 = event_ring[trb_index + 0];
+        }
+        if (event_trb1 != 0) {
+            *event_trb1 = event_ring[trb_index + 1];
+        }
+        if (event_trb2 != 0) {
+            *event_trb2 = event_ring[trb_index + 2];
+        }
+        if (event_trb3 != 0) {
+            *event_trb3 = event_ring[trb_index + 3];
+        }
+        if (event_type_out != 0) {
+            *event_type_out = event_type;
+        }
+        if (completion_code != 0) {
+            *completion_code = event_ring[trb_index + 2] >> 24;
+        }
+
+        uint64_t next_event = xhci_next_transfer_event + 1;
+        if (next_event >= XHCI_EVENT_RING_SEGMENT_TRBS) {
+            next_event = 0;
+        }
+        xhci_info.erdp_value = xhci_info.event_ring_phys + XHCI_TRB_SIZE * next_event;
+        mmio_write64(ir0, XHCI_IR_ERDP, xhci_info.erdp_value | XHCI_ERDP_EHB);
+        xhci_info.erdp_value = mmio_read64(ir0, XHCI_IR_ERDP);
+        xhci_advance_transfer_event(regs);
+        return ((event_ring[trb_index + 2] >> 24) == XHCI_COMPLETION_SUCCESS) ? 0 : -1;
     }
 
     return -1;
@@ -880,6 +1021,12 @@ static void xhci_scan_root_ports(volatile uint8_t *regs) {
     xhci_info.first_connected_enabled = 0;
     xhci_info.first_connected_powered = 0;
     xhci_info.first_connected_link_state = 0;
+    xhci_info.second_connected_port = 0;
+    xhci_info.second_connected_portsc = 0;
+    xhci_info.second_connected_speed = 0;
+    xhci_info.second_connected_enabled = 0;
+    xhci_info.second_connected_powered = 0;
+    xhci_info.second_connected_link_state = 0;
     xhci_info.port1_portsc = 0;
     for (uint64_t port = 1; port <= limit; port++) {
         uint64_t offset = XHCI_PORT_REGS_BASE + (port - 1) * XHCI_PORT_REG_STRIDE;
@@ -914,6 +1061,13 @@ static void xhci_scan_root_ports(volatile uint8_t *regs) {
             xhci_info.first_connected_enabled = enabled;
             xhci_info.first_connected_powered = powered;
             xhci_info.first_connected_link_state = link_state;
+        } else if (xhci_info.second_connected_port == 0) {
+            xhci_info.second_connected_port = port;
+            xhci_info.second_connected_portsc = portsc;
+            xhci_info.second_connected_speed = speed;
+            xhci_info.second_connected_enabled = enabled;
+            xhci_info.second_connected_powered = powered;
+            xhci_info.second_connected_link_state = link_state;
         }
     }
 }
@@ -1514,6 +1668,77 @@ static int xhci_bulk_transfer(volatile uint8_t *regs,
                                     event_trb3);
 }
 
+static int xhci_bulk_transfer_dynamic(volatile uint8_t *regs,
+                                      uint64_t ring_phys,
+                                      uint64_t *next_trb,
+                                      uint64_t *producer_cycle,
+                                      uint64_t *wraps,
+                                      const char *name,
+                                      uint64_t endpoint_dci,
+                                      uint64_t buffer_phys,
+                                      uint64_t length,
+                                      uint64_t *completion_code,
+                                      uint64_t *event_type_out,
+                                      uint64_t *event_trb0,
+                                      uint64_t *event_trb1,
+                                      uint64_t *event_trb2,
+                                      uint64_t *event_trb3) {
+    volatile uint8_t *doorbells;
+    volatile uint32_t *ring;
+    uint64_t slot_id;
+    uint64_t base;
+
+    if (regs == 0 || ring_phys == 0 || next_trb == 0 ||
+        producer_cycle == 0 || buffer_phys == 0 ||
+        endpoint_dci == 0 || endpoint_dci >= 32 ||
+        xhci_info.address_device_slot_id == 0 || xhci_info.doorbell_offset == 0 ||
+        *next_trb >= XHCI_TRANSFER_RING_TRBS - 1 ||
+        length == 0 || length > PAGE_SIZE) {
+        return -1;
+    }
+
+    slot_id = xhci_info.address_device_slot_id;
+    base = *next_trb * 4;
+    ring = (volatile uint32_t *)phys_to_virt(ring_phys);
+    doorbells = regs + xhci_info.doorbell_offset;
+
+    if (*next_trb + 1 < XHCI_TRANSFER_RING_TRBS - 1) {
+        xhci_mark_transfer_trb_inactive(ring_phys, *next_trb + 1, *producer_cycle ? 0 : 1);
+    } else {
+        uint64_t link_base = (XHCI_TRANSFER_RING_TRBS - 1) * 4;
+        ring[link_base + 0] = (uint32_t)ring_phys;
+        ring[link_base + 1] = (uint32_t)(ring_phys >> 32);
+        ring[link_base + 2] = 0;
+        ring[link_base + 3] = (uint32_t)((XHCI_LINK_TRB_TYPE << XHCI_TRB_TYPE_SHIFT) |
+                                        XHCI_LINK_TRB_TOGGLE_CYCLE |
+                                        (*producer_cycle ? XHCI_TRB_CYCLE : 0));
+        xhci_mark_transfer_trb_inactive(ring_phys, 0, *producer_cycle);
+    }
+
+    ring[base + 0] = (uint32_t)buffer_phys;
+    ring[base + 1] = (uint32_t)(buffer_phys >> 32);
+    ring[base + 2] = (uint32_t)length;
+    ring[base + 3] = (uint32_t)((XHCI_NORMAL_TRB_TYPE << XHCI_TRB_TYPE_SHIFT) |
+                                XHCI_TRB_IOC |
+                                (*producer_cycle ? XHCI_TRB_CYCLE : 0));
+    __sync_synchronize();
+
+    mmio_write32(doorbells, slot_id * 4, (uint32_t)endpoint_dci);
+    if (xhci_wait_next_transfer_event(regs,
+                                      slot_id,
+                                      completion_code,
+                                      event_type_out,
+                                      event_trb0,
+                                      event_trb1,
+                                      event_trb2,
+                                      event_trb3) != 0) {
+        return -1;
+    }
+
+    xhci_advance_transfer_ring(next_trb, producer_cycle, wraps, name);
+    return 0;
+}
+
 struct xhci_bot_result {
     uint64_t cbw_completion_code;
     uint64_t cbw_event_type;
@@ -1609,6 +1834,109 @@ static int xhci_bot_scsi_command(volatile uint8_t *regs,
                            0,
                            0,
                            0) != 0) {
+        return -1;
+    }
+
+    csw = (uint8_t *)phys_to_virt(xhci_info.bot_csw_phys);
+    result->csw_signature = read_le32(&csw[0]);
+    result->csw_tag = read_le32(&csw[4]);
+    result->csw_residue = read_le32(&csw[8]);
+    result->csw_status = csw[12];
+
+    if (result->csw_signature != USB_BOT_CSW_SIGNATURE ||
+        result->csw_tag != tag ||
+        result->csw_status != 0) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int xhci_bot_scsi_command_dynamic(volatile uint8_t *regs,
+                                         uint64_t tag,
+                                         const uint8_t *cdb,
+                                         uint64_t cdb_length,
+                                         uint64_t data_phys,
+                                         uint64_t data_length,
+                                         uint64_t data_in,
+                                         struct xhci_bot_result *result) {
+    uint8_t *cbw;
+    uint8_t *csw;
+
+    if (regs == 0 || cdb == 0 || result == 0 ||
+        cdb_length == 0 || cdb_length > 16 ||
+        xhci_info.bot_cbw_phys == 0 || xhci_info.bot_csw_phys == 0 ||
+        xhci_info.bulk_in_ring_phys == 0 || xhci_info.bulk_out_ring_phys == 0 ||
+        xhci_info.first_bulk_in_dci == 0 || xhci_info.first_bulk_out_dci == 0 ||
+        data_phys == 0 || data_length == 0 || data_length > PAGE_SIZE ||
+        !xhci_bot_ring_ready) {
+        return -1;
+    }
+
+    zero_page_phys(xhci_info.bot_cbw_phys);
+    zero_page_phys(xhci_info.bot_csw_phys);
+    zero_bytes(result, sizeof(*result));
+
+    cbw = (uint8_t *)phys_to_virt(xhci_info.bot_cbw_phys);
+    write_le32(&cbw[0], (uint32_t)USB_BOT_CBW_SIGNATURE);
+    write_le32(&cbw[4], (uint32_t)tag);
+    write_le32(&cbw[8], (uint32_t)data_length);
+    cbw[12] = data_in ? 0x80 : 0x00;
+    cbw[13] = 0;
+    cbw[14] = (uint8_t)cdb_length;
+    copy_bytes(&cbw[15], cdb, cdb_length);
+
+    if (xhci_bulk_transfer_dynamic(regs,
+                                   xhci_info.bulk_out_ring_phys,
+                                   &xhci_bulk_out_next_trb,
+                                   &xhci_bulk_out_cycle,
+                                   &xhci_bulk_out_wraps,
+                                   "bulk-out",
+                                   xhci_info.first_bulk_out_dci,
+                                   xhci_info.bot_cbw_phys,
+                                   USB_BOT_CBW_LENGTH,
+                                   &result->cbw_completion_code,
+                                   &result->cbw_event_type,
+                                   0,
+                                   0,
+                                   0,
+                                   0) != 0) {
+        return -1;
+    }
+
+    if (xhci_bulk_transfer_dynamic(regs,
+                                   data_in ? xhci_info.bulk_in_ring_phys : xhci_info.bulk_out_ring_phys,
+                                   data_in ? &xhci_bulk_in_next_trb : &xhci_bulk_out_next_trb,
+                                   data_in ? &xhci_bulk_in_cycle : &xhci_bulk_out_cycle,
+                                   data_in ? &xhci_bulk_in_wraps : &xhci_bulk_out_wraps,
+                                   data_in ? "bulk-in" : "bulk-out",
+                                   data_in ? xhci_info.first_bulk_in_dci : xhci_info.first_bulk_out_dci,
+                                   data_phys,
+                                   data_length,
+                                   &result->data_completion_code,
+                                   &result->data_event_type,
+                                   0,
+                                   0,
+                                   0,
+                                   0) != 0) {
+        return -1;
+    }
+
+    if (xhci_bulk_transfer_dynamic(regs,
+                                   xhci_info.bulk_in_ring_phys,
+                                   &xhci_bulk_in_next_trb,
+                                   &xhci_bulk_in_cycle,
+                                   &xhci_bulk_in_wraps,
+                                   "bulk-in",
+                                   xhci_info.first_bulk_in_dci,
+                                   xhci_info.bot_csw_phys,
+                                   USB_BOT_CSW_LENGTH,
+                                   &result->csw_completion_code,
+                                   &result->csw_event_type,
+                                   0,
+                                   0,
+                                   0,
+                                   0) != 0) {
         return -1;
     }
 
@@ -1806,6 +2134,13 @@ static void xhci_set_configuration_and_probe_storage(volatile uint8_t *regs) {
     xhci_bulk_out_next_trb = 3;
     xhci_bulk_in_next_trb = 6;
     xhci_next_transfer_event = 17;
+    xhci_bulk_out_cycle = 1;
+    xhci_bulk_in_cycle = 1;
+    xhci_transfer_event_cycle = 1;
+    xhci_bulk_out_wraps = 0;
+    xhci_bulk_in_wraps = 0;
+    xhci_transfer_event_wraps = 0;
+    xhci_bot_ring_ready = 1;
     xhci_bot_next_tag = 0x544f5100ULL;
 }
 
@@ -1818,17 +2153,10 @@ static int xhci_usb_storage_read_sector(uint64_t lba, void *buffer) {
     if (xhci_regs == 0 || buffer == 0 || !xhci_info.bot_capacity_ok ||
         xhci_info.bot_capacity_block_size != 512 ||
         xhci_info.bot_read10_data_phys == 0 ||
-        xhci_bulk_out_next_trb == 0 || xhci_bulk_in_next_trb == 0 ||
-        xhci_next_transfer_event == 0 || xhci_bot_next_tag == 0) {
+        !xhci_bot_ring_ready || xhci_bot_next_tag == 0) {
         return -1;
     }
     if (lba > xhci_info.bot_capacity_last_lba) {
-        return -1;
-    }
-    if (xhci_bulk_out_next_trb >= XHCI_TRANSFER_RING_TRBS - 1 ||
-        xhci_bulk_in_next_trb + 1 >= XHCI_TRANSFER_RING_TRBS - 1 ||
-        xhci_next_transfer_event + 2 >= XHCI_EVENT_RING_SEGMENT_TRBS) {
-        log_warn("USB storage BOT ring exhausted; reboot required before more reads\n");
         return -1;
     }
 
@@ -1843,17 +2171,14 @@ static int xhci_usb_storage_read_sector(uint64_t lba, void *buffer) {
     xhci_info.bot_read10_tag = tag;
     xhci_info.bot_read10_lba = lba;
     xhci_info.bot_read10_bytes = 512;
-    if (xhci_bot_scsi_command(xhci_regs,
-                              tag,
-                              read10_cdb,
-                              sizeof(read10_cdb),
-                              xhci_info.bot_read10_data_phys,
-                              512,
-                              1,
-                              xhci_bulk_out_next_trb,
-                              xhci_bulk_in_next_trb,
-                              xhci_next_transfer_event,
-                              &result) != 0) {
+    if (xhci_bot_scsi_command_dynamic(xhci_regs,
+                                      tag,
+                                      read10_cdb,
+                                      sizeof(read10_cdb),
+                                      xhci_info.bot_read10_data_phys,
+                                      512,
+                                      1,
+                                      &result) != 0) {
         xhci_info.bot_read10_cbw_completion_code = result.cbw_completion_code;
         xhci_info.bot_read10_data_completion_code = result.data_completion_code;
         xhci_info.bot_read10_csw_completion_code = result.csw_completion_code;
@@ -1864,10 +2189,6 @@ static int xhci_usb_storage_read_sector(uint64_t lba, void *buffer) {
         xhci_info.bot_read10_ok = 0;
         return -1;
     }
-
-    xhci_bulk_out_next_trb++;
-    xhci_bulk_in_next_trb += 2;
-    xhci_next_transfer_event += 3;
 
     data = (uint8_t *)phys_to_virt(xhci_info.bot_read10_data_phys);
     copy_bytes(buffer, data, 512);
@@ -1893,17 +2214,10 @@ static int xhci_usb_storage_write_sector(uint64_t lba, const void *buffer) {
     if (xhci_regs == 0 || buffer == 0 || !xhci_info.bot_capacity_ok ||
         xhci_info.bot_capacity_block_size != 512 ||
         xhci_info.bot_read10_data_phys == 0 ||
-        xhci_bulk_out_next_trb == 0 || xhci_bulk_in_next_trb == 0 ||
-        xhci_next_transfer_event == 0 || xhci_bot_next_tag == 0) {
+        !xhci_bot_ring_ready || xhci_bot_next_tag == 0) {
         return -1;
     }
     if (lba > xhci_info.bot_capacity_last_lba) {
-        return -1;
-    }
-    if (xhci_bulk_out_next_trb + 1 >= XHCI_TRANSFER_RING_TRBS - 1 ||
-        xhci_bulk_in_next_trb >= XHCI_TRANSFER_RING_TRBS - 1 ||
-        xhci_next_transfer_event + 2 >= XHCI_EVENT_RING_SEGMENT_TRBS) {
-        log_warn("USB storage BOT ring exhausted; reboot required before more writes\n");
         return -1;
     }
 
@@ -1920,17 +2234,14 @@ static int xhci_usb_storage_write_sector(uint64_t lba, const void *buffer) {
     xhci_info.bot_write10_lba = lba;
     xhci_info.bot_write10_bytes = 512;
     xhci_info.bot_write10_data_phys = xhci_info.bot_read10_data_phys;
-    if (xhci_bot_scsi_command(xhci_regs,
-                              tag,
-                              write10_cdb,
-                              sizeof(write10_cdb),
-                              xhci_info.bot_write10_data_phys,
-                              512,
-                              0,
-                              xhci_bulk_out_next_trb,
-                              xhci_bulk_in_next_trb,
-                              xhci_next_transfer_event,
-                              &result) != 0) {
+    if (xhci_bot_scsi_command_dynamic(xhci_regs,
+                                      tag,
+                                      write10_cdb,
+                                      sizeof(write10_cdb),
+                                      xhci_info.bot_write10_data_phys,
+                                      512,
+                                      0,
+                                      &result) != 0) {
         xhci_info.bot_write10_cbw_completion_code = result.cbw_completion_code;
         xhci_info.bot_write10_data_completion_code = result.data_completion_code;
         xhci_info.bot_write10_csw_completion_code = result.csw_completion_code;
@@ -1943,10 +2254,6 @@ static int xhci_usb_storage_write_sector(uint64_t lba, const void *buffer) {
         xhci_info.bot_write10_ok = 0;
         return -1;
     }
-
-    xhci_bulk_out_next_trb += 2;
-    xhci_bulk_in_next_trb++;
-    xhci_next_transfer_event += 3;
 
     xhci_info.bot_write10_cbw_completion_code = XHCI_COMPLETION_SUCCESS;
     xhci_info.bot_write10_data_completion_code = XHCI_COMPLETION_SUCCESS;
@@ -2085,6 +2392,13 @@ static void pci_scan_xhci(void) {
     xhci_bulk_out_next_trb = 0;
     xhci_bulk_in_next_trb = 0;
     xhci_next_transfer_event = 0;
+    xhci_bulk_out_cycle = 0;
+    xhci_bulk_in_cycle = 0;
+    xhci_transfer_event_cycle = 0;
+    xhci_bulk_out_wraps = 0;
+    xhci_bulk_in_wraps = 0;
+    xhci_transfer_event_wraps = 0;
+    xhci_bot_ring_ready = 0;
     xhci_bot_next_tag = 0;
     xhci_usb_storage_registered = 0;
     zero_bytes(&xhci_usb_storage_block, sizeof(xhci_usb_storage_block));
@@ -2220,7 +2534,7 @@ static void pci_scan_xhci(void) {
                                      xhci_info.erdp_value);
                         }
                         if (xhci_info.port_scan_done) {
-                            log_info("xHCI ports: scanned=%u connected=%u enabled=%u powered=%u first=%u portsc=%x speed=%u pls=%u port1=%x\n",
+                            log_info("xHCI ports: scanned=%u connected=%u enabled=%u powered=%u first=%u portsc=%x speed=%u pls=%u second=%u portsc=%x speed=%u pls=%u port1=%x\n",
                                      xhci_info.port_scan_limit,
                                      xhci_info.connected_port_count,
                                      xhci_info.enabled_port_count,
@@ -2229,6 +2543,10 @@ static void pci_scan_xhci(void) {
                                      xhci_info.first_connected_portsc,
                                      xhci_info.first_connected_speed,
                                      xhci_info.first_connected_link_state,
+                                     xhci_info.second_connected_port,
+                                     xhci_info.second_connected_portsc,
+                                     xhci_info.second_connected_speed,
+                                     xhci_info.second_connected_link_state,
                                      xhci_info.port1_portsc);
                         }
                         if (xhci_info.port_reset_attempted) {

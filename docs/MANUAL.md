@@ -63,20 +63,21 @@ TangPingOS also has a first block-device layer. `ramblk0` is an in-memory
 disk-like device with 64 sectors of 512 bytes each. In QEMU, `make run` also
 creates and attaches `build/disk.img` through virtio-blk; the kernel registers
 that real virtual disk as `vd0` and parses its MBR primary partitions as
-`vd0p1` and `vd0p2`. The first partition is mounted through a small readonly
-block-backed VFS skeleton at `/usb`. The QEMU test partition contains a minimal
-exFAT-shaped boot sector and a tiny root directory sample so the kernel can
-validate exFAT detection, root-directory chain parsing, subdirectory parsing,
-and FAT-chain file reads. It also contains exFAT allocation-bitmap and
-upcase-table metadata entries so the kernel can start validating free-space
-information before any future write support. The second partition is mounted at
-`/boot` and is a small FAT32 sample that stands in for the kind of UEFI boot
-partition a real machine commonly uses.
+`vd0p1` and `vd0p2`. The first partition is mounted through a small exFAT
+block-backed VFS skeleton at `/usb`. Normal builds still treat it as readonly,
+while guarded test builds validate limited root-file create, write, grow, read,
+and unlink paths. The QEMU test partition contains a minimal exFAT-shaped boot
+sector and a tiny root directory sample so the kernel can validate exFAT
+detection, root-directory chain parsing, subdirectory parsing, FAT-chain file
+reads, allocation-bitmap updates, and small FAT-chain growth. The second
+partition is mounted at `/boot` and is a small FAT32 sample that stands in for
+the kind of UEFI boot partition a real machine commonly uses.
 
 `mounts` shows the current VFS mount table. Today `/dev` is a real devfs mount,
 `/usb` and `/boot` are real block-device-backed mounts when QEMU provides
-`vd0p1` and `vd0p2`, and writable `ramfs` plus readonly `initrd` are layered at
-`/`. The current `/usb`
+`vd0p1` and `vd0p2`; `/usbdisk` and `/usbboot` are real USB Mass Storage-backed
+mounts when QEMU provides the xHCI USB test disk. Writable `ramfs` plus
+readonly `initrd` are layered at `/`. The current `/usb`
 backend is not a full exFAT filesystem yet; it exposes test files, parsed
 exFAT boot-sector metadata, and readonly root-directory files whose data can
 span a FAT chain. The root directory itself can also span a FAT chain, and
@@ -98,11 +99,13 @@ and `/NEW.TXT` directory metadata before normal real writes exist. A guarded
 test build can additionally commit those three sector updates to the QEMU
 `disk.img` and the QEMU USB image, then read them back for verification. In
 that test build, the preallocated `/NEW.TXT` slot can be renamed once, and a
-small test-only creator can allocate more three-cluster uppercase 8.3-style root
-files such as `LOG.TXT` or `TWO.TXT`. The same guarded test path can unlink
-those writable test files by marking their directory entries inactive and
-freeing their bitmap/FAT chain; normal builds keep `/usb` and `/usbdisk`
-readonly. The current `/boot` backend
+small test-only creator can allocate uppercase 8.3-style root files such as
+`LOG.TXT` or `TWO.TXT` according to the requested size. The same guarded test
+path can grow a one-cluster file such as `GROW.TXT` into a two-cluster FAT
+chain, write across that boundary, read the contents back, and unlink those
+writable test files by marking their directory entries inactive and freeing
+their bitmap/FAT chain; normal builds keep `/usb` and `/usbdisk` readonly. The
+current `/boot` backend
 recognizes FAT32 boot-sector geometry, lists 8.3 short-name files and ASCII
 long-file-name entries, walks readonly subdirectories, and reads file cluster
 data. It does not yet support Unicode long names or FAT32 writes.
@@ -110,11 +113,13 @@ data. It does not yet support Unicode long names or FAT32 writes.
 `make run` also attaches `build/usb.img` through QEMU xHCI `usb-storage`.
 TangPingOS probes it through USB Mass Storage BOT, verifies a scratch-sector
 SCSI `WRITE(10)` plus `READ(10)` round trip near the end of the test image,
-registers it as `usb0`, scans its MBR partition as `usb0p1`, and mounts the
-test exFAT partition at `/usbdisk` when probing succeeds. This path uses the
-USB/xHCI read/write-sector implementation rather than virtio-blk. The
-`/usbdisk` filesystem mount remains readonly; the write support is currently
-block-device level only.
+registers it as `usb0`, scans its MBR partitions as `usb0p1` and `usb0p2`,
+mounts the test exFAT partition at `/usbdisk`, and mounts the test FAT32
+partition at `/usbboot` when probing succeeds. This path uses the USB/xHCI
+read/write-sector implementation rather than virtio-blk. The `/usbdisk`
+filesystem mount remains readonly in normal builds; guarded test builds also
+exercise the same limited exFAT create, grow, write, read, and unlink path
+through USB sector IO. `/usbboot` is readonly FAT32.
 
 ## Shell Commands
 
@@ -141,7 +146,7 @@ block-device level only.
 | `mem` | `mem` | Prints physical page size, total pages, used pages, and free pages. |
 | `uptime` | `uptime` | Prints scheduler ticks and whole seconds. |
 | `sysinfo` | `sysinfo` | Prints CPU, framebuffer, memmap, timer, uptime, memory summary, and xHCI count. |
-| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, operational-register/reset, extended-capability, BIOS/OS handoff, ring setup, first command result, root-hub port status, QEMU port-reset information, first Address Device result, first device/configuration/interface descriptors, first bulk endpoint pair, Configure Endpoint result, Set Configuration result, and first USB Mass Storage BOT Inquiry/Read Capacity/Read10/Write10 results. |
+| `usb` | `usb` | Prints the first detected xHCI USB controller's PCI, MMIO, capability-register, operational-register/reset, extended-capability, BIOS/OS handoff, ring setup, first command result, root-hub port status including the first and second connected ports, QEMU port-reset information, first Address Device result, first device/configuration/interface descriptors, first bulk endpoint pair, Configure Endpoint result, Set Configuration result, and first USB Mass Storage BOT Inquiry/Read Capacity/Read10/Write10 results. |
 | `mounts` | `mounts` | Lists VFS mount entries, sources, and writable status. |
 | `lsblk` | `lsblk` | Lists registered block devices. |
 | `blkread` | `blkread 2 0` | Reads one 512-byte sector and prints it in hexadecimal. After USB Mass Storage probing succeeds, `blkread <usb0-id> 0` can read the `usb0` device shown by `lsblk`. |
@@ -171,6 +176,17 @@ When QEMU provides the USB storage test image, `/usbdisk` contains:
 | `/usbdisk/HELLO.TXT` | Parsed from the USB BOT-backed exFAT partition. |
 | `/usbdisk/CHAIN.TXT` | Read through a two-cluster FAT chain over USB BOT sector reads. |
 | `/usbdisk/LATE.TXT` | Parsed from the second root-directory cluster over USB BOT reads. |
+
+The same USB storage test image also contains a FAT32 partition mounted at
+`/usbboot`:
+
+| Path | Function |
+| --- | --- |
+| `/usbboot/info.txt` | Text metadata for the USB-backed FAT32 mount. |
+| `/usbboot/README.TXT` | Readonly FAT32 root-directory short-name file over USB BOT reads. |
+| `/usbboot/KERNEL.TXT` | Second readonly USB FAT32 root-directory file. |
+| `/usbboot/usb long filename.txt` | Readonly USB FAT32 long-file-name sample. |
+| `/usbboot/EFI/BOOT/BOOTX64.EFI` | Readonly USB FAT32 subdirectory sample matching the UEFI removable-media boot path. |
 
 The same QEMU disk also contains a FAT32 sample mounted at `/boot`:
 
@@ -316,6 +332,7 @@ uint64_t tpos_open_flags(const char *path, uint64_t flags);
 uint64_t tpos_read(uint64_t fd, void *buffer, uint64_t length);
 uint64_t tpos_close(uint64_t fd);
 uint64_t tpos_getdents(const char *path, uint64_t index, struct dirent *dirent);
+uint64_t tpos_write_file(const char *path, uint64_t offset, const void *buffer, uint64_t length);
 uint64_t tpos_dup2(uint64_t old_fd, uint64_t new_fd);
 uint64_t tpos_lseek(uint64_t fd, int64_t offset, uint64_t whence);
 uint64_t tpos_unlink(const char *path);
@@ -421,8 +438,11 @@ make test-exfat-commit
   QEMU test disk and QEMU USB test image; it writes the planned `/NEW.TXT`
   bitmap, FAT, and directory sectors, reads them back to verify the commit, and
   then lets the shell create `/usb/NOTE.TXT`, `/usb/LOG.TXT`,
-  `/usbdisk/USB.TXT`, and `/usbdisk/TWO.TXT` through the normal VFS file API,
-  write text, read the bytes back, unlink the dynamic files, and recreate them.
+  `/usb/GROW.TXT`, `/usbdisk/USB.TXT`, `/usbdisk/TWO.TXT`, and
+  `/usbdisk/GROW.TXT` through the normal VFS file API, write text, grow a small
+  file across a cluster boundary, read the bytes back, unlink the dynamic files,
+  recreate them, and run a bounded USB scratch-sector stress loop that forces
+  xHCI transfer/event ring wraparound.
 
 After any test target, rebuild normal output with:
 
@@ -447,7 +467,8 @@ initializes the virtqueue, registers the disk as `vd0`, parses the MBR, and
 registers `vd0p1` and `vd0p2`. `make run` also builds `build/usb.img`, attaches
 it as QEMU xHCI `usb-storage`, runs a scratch-sector USB BOT `WRITE(10)`
 readback check, registers the USB disk as `usb0`, parses its MBR partition as
-`usb0p1`, and mounts that exFAT partition at `/usbdisk`.
+`usb0p1` and `usb0p2`, mounts the exFAT partition at `/usbdisk`, and mounts
+the FAT32 partition at `/usbboot`.
 
 Useful checks in the shell:
 
@@ -467,6 +488,14 @@ cat "/boot/very long filename.txt"
 ls /boot/EFI
 ls /boot/EFI/BOOT
 cat /boot/EFI/BOOT/BOOTX64.EFI
+ls /usbdisk
+cat /usbdisk/HELLO.TXT
+ls /usbboot
+cat /usbboot/info.txt
+cat /usbboot/README.TXT
+cat "/usbboot/usb long filename.txt"
+ls /usbboot/EFI/BOOT
+cat /usbboot/EFI/BOOT/BOOTX64.EFI
 hexdump /usb/sector0.bin
 lsblk
 blkread 2 0
@@ -489,11 +518,14 @@ bitmap, FAT chain, and directory metadata. The developer-only
 `make test-exfat-commit` target enables a guarded QEMU test commit that writes
 those three sectors to `build/disk.img` and `build/usb.img`, then verifies them
 by reading the sectors back. In that same test build, the shell also opens
-`/usb/NOTE.TXT`, `/usb/LOG.TXT`, `/usbdisk/USB.TXT`, and `/usbdisk/TWO.TXT`
-through VFS, writes text to them, reads the exact bytes back, unlinks the
-dynamic files, and recreates them. The test path currently supports guarded
-uppercase 8.3-style root-file creation and unlink backed by fixed three-cluster
-allocations; normal builds still do not support exFAT writes.
+`/usb/NOTE.TXT`, `/usb/LOG.TXT`, `/usb/GROW.TXT`, `/usbdisk/USB.TXT`,
+`/usbdisk/TWO.TXT`, and `/usbdisk/GROW.TXT` through VFS, writes text to them,
+grows the `GROW.TXT` files from one cluster to two clusters, reads the exact
+bytes back, unlinks the dynamic files, and recreates them. It also performs a
+bounded USB scratch-sector stress loop to force xHCI event, bulk-in, and
+bulk-out ring wraparound. The test path currently supports guarded uppercase
+8.3-style root-file creation, limited cluster-chain growth, and unlink; normal
+builds still do not support exFAT writes.
 
 ## Real Hardware Boot Notes
 
@@ -545,9 +577,10 @@ Expected constraints on real hardware:
   device context base address array for QEMU xHCI, then start the controller
   and issue the first `Enable Slot` command. It can also scan xHCI root-hub
   `PORTSC` registers to report connected, enabled, powered, and first-port
-  speed/link-state information. QEMU runs now attach small `usb-storage` and
-  `usb-kbd` test devices to the xHCI controller, and TangPingOS can reset the
-  first connected QEMU xHCI port. TangPingOS can also build the initial xHCI
+  speed/link-state information for the first two connected ports. QEMU runs now
+  attach small `usb-storage` and `usb-kbd` test devices to the xHCI controller,
+  and TangPingOS can see both connected ports before resetting the first
+  connected QEMU xHCI port. TangPingOS can also build the initial xHCI
   input context for that port, issue `Address Device`, and report the assigned
   USB address and slot state. It can now issue a first EP0
   `GET_DESCRIPTOR(Device)` request and report the device descriptor's
@@ -565,11 +598,14 @@ Expected constraints on real hardware:
   can list it and `blkread`/`blkwrite` can access sectors through the generic
   block syscall path. TangPingOS also scans `usb0` for MBR partitions and
   mounts the QEMU USB exFAT test partition at `/usbdisk` when `usb0p1` is
-  available. The `usbtestwrite` command performs a bounded write/readback
-  check against the last sector of the known QEMU `usb0p1` test partition and
-  refuses other partition sizes. The `/usbdisk` filesystem is still readonly,
-  so this is not yet exFAT file creation on USB. It does not yet use USB HID
-  keyboard input.
+  available, and mounts the QEMU USB FAT32 test partition at `/usbboot` when
+  `usb0p2` is available. The `usbtestwrite` command performs a bounded
+  write/readback check against the last sector of the known QEMU `usb0p1` test
+  partition and refuses other partition sizes. In guarded test builds,
+  `/usbdisk` also runs limited exFAT root-file create, grow, write, read, and
+  unlink checks through USB sector IO; normal builds keep the filesystem
+  readonly. `/usbboot` is readonly FAT32. It does not yet use USB HID keyboard
+  input.
 - Keyboard input currently depends on simple PS/2-style input. Many modern
   laptops use USB/xHCI or firmware translation, so keyboard behavior on real
   hardware is uncertain until TangPingOS has USB HID support.
@@ -583,21 +619,24 @@ exact hardware in advance and bring a fallback QEMU demo.
 
 - No persistent disk filesystem.
 - MBR primary partitions are parsed, but GPT and extended partitions are not.
-- `/usb` is a readonly block-backed VFS with minimal exFAT boot-sector,
+- `/usb` is a block-backed VFS with minimal exFAT boot-sector,
   allocation-bitmap, dry-run allocation planning, directory-entry byte
   encoding, dry-run transaction summaries, in-memory transaction patch
   validation, upcase-table, root-directory chain, subdirectory, and FAT-chain
   parsing, not a complete exFAT filesystem. The `make test-exfat-commit`
   build can commit one fixed allocation transaction to the QEMU virtio test
   disk and USB test image, then create a few guarded uppercase 8.3-style root
-  files with fixed three-cluster allocations and unlink those test-created
-  files; this is not general-purpose exFAT write support.
-- `/boot` is a readonly FAT32 sample mount with boot-sector parsing, 8.3
-  short-name directory listing, ASCII long-file-name entries, subdirectory
-  walking, and file reads. It does not yet support Unicode long names or writes.
+  files, grow a small file from one cluster to two clusters, and unlink those
+  test-created files; normal builds still keep the filesystem readonly, and
+  this is not general-purpose exFAT write support.
+- `/boot` and `/usbboot` are readonly FAT32 sample mounts with boot-sector
+  parsing, 8.3 short-name directory listing, ASCII long-file-name entries,
+  subdirectory walking, and file reads. They do not yet support Unicode long
+  names or writes.
 - No real hardware disk-controller driver; QEMU virtio-blk is supported for
   disk-image sector IO.
-- No USB stack.
+- USB support is currently a narrow QEMU xHCI Mass Storage path, not a general
+  real-hardware USB stack.
 - No full keyboard layout, modifiers, command history, or tab completion.
 - No `wait`, pipes, redirection, signals, or environment variables.
 - `edit` is a line editor, not a full-screen editor.

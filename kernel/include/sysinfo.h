@@ -104,6 +104,12 @@ struct sys_system_info {
     uint64_t xhci_first_connected_enabled;
     uint64_t xhci_first_connected_powered;
     uint64_t xhci_first_connected_link_state;
+    uint64_t xhci_second_connected_port;
+    uint64_t xhci_second_connected_portsc;
+    uint64_t xhci_second_connected_speed;
+    uint64_t xhci_second_connected_enabled;
+    uint64_t xhci_second_connected_powered;
+    uint64_t xhci_second_connected_link_state;
     uint64_t xhci_port1_portsc;
     uint64_t xhci_port_reset_attempted;
     uint64_t xhci_port_reset_ok;

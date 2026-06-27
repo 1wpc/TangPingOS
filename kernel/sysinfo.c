@@ -198,6 +198,12 @@ void sysinfo_get_system_info(struct sys_system_info *out) {
     out->xhci_first_connected_enabled = xhci.first_connected_enabled;
     out->xhci_first_connected_powered = xhci.first_connected_powered;
     out->xhci_first_connected_link_state = xhci.first_connected_link_state;
+    out->xhci_second_connected_port = xhci.second_connected_port;
+    out->xhci_second_connected_portsc = xhci.second_connected_portsc;
+    out->xhci_second_connected_speed = xhci.second_connected_speed;
+    out->xhci_second_connected_enabled = xhci.second_connected_enabled;
+    out->xhci_second_connected_powered = xhci.second_connected_powered;
+    out->xhci_second_connected_link_state = xhci.second_connected_link_state;
     out->xhci_port1_portsc = xhci.port1_portsc;
     out->xhci_port_reset_attempted = xhci.port_reset_attempted;
     out->xhci_port_reset_ok = xhci.port_reset_ok;

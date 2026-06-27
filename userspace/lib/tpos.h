@@ -14,6 +14,7 @@
 #define SYS_CLOSE 10
 #define SYS_GETDENTS 11
 #define SYS_DUP2 13
+#define SYS_WRITE_FILE 14
 #define SYS_LSEEK 15
 #define SYS_UNLINK 16
 #define SYS_SPAWN 17
@@ -162,6 +163,12 @@ struct system_info {
     uint64_t xhci_first_connected_enabled;
     uint64_t xhci_first_connected_powered;
     uint64_t xhci_first_connected_link_state;
+    uint64_t xhci_second_connected_port;
+    uint64_t xhci_second_connected_portsc;
+    uint64_t xhci_second_connected_speed;
+    uint64_t xhci_second_connected_enabled;
+    uint64_t xhci_second_connected_powered;
+    uint64_t xhci_second_connected_link_state;
     uint64_t xhci_port1_portsc;
     uint64_t xhci_port_reset_attempted;
     uint64_t xhci_port_reset_ok;
@@ -396,6 +403,7 @@ uint64_t tpos_open(const char *path);
 uint64_t tpos_read(uint64_t fd, void *buffer, uint64_t length);
 uint64_t tpos_close(uint64_t fd);
 uint64_t tpos_getdents(const char *path, uint64_t index, struct dirent *dirent);
+uint64_t tpos_write_file(const char *path, uint64_t offset, const void *buffer, uint64_t length);
 uint64_t tpos_dup2(uint64_t old_fd, uint64_t new_fd);
 uint64_t tpos_lseek(uint64_t fd, int64_t offset, uint64_t whence);
 uint64_t tpos_unlink(const char *path);

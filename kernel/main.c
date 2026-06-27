@@ -116,11 +116,15 @@ void _start(void) {
     virtio_blk_init();
     partition_init();
     uint64_t usb_block_index = block_device_count();
-    uint64_t usb_partition_index = UINT64_MAX;
+    uint64_t usb_exfat_partition_index = UINT64_MAX;
+    uint64_t usb_fat32_partition_index = UINT64_MAX;
     if (pci_register_usb_storage_block_device() == 0) {
         partition_scan_device(usb_block_index);
-        if (block_find_by_name("usb0p1", &usb_partition_index) != 0) {
-            usb_partition_index = UINT64_MAX;
+        if (block_find_by_name("usb0p1", &usb_exfat_partition_index) != 0) {
+            usb_exfat_partition_index = UINT64_MAX;
+        }
+        if (block_find_by_name("usb0p2", &usb_fat32_partition_index) != 0) {
+            usb_fat32_partition_index = UINT64_MAX;
         }
     }
     vfs_init();
@@ -133,9 +137,13 @@ void _start(void) {
     if (blockfs_mount(3, "/boot") != 0) {
         console_write("[warn] /boot block mount unavailable\n");
     }
-    if (usb_partition_index != UINT64_MAX &&
-        blockfs_mount(usb_partition_index, "/usbdisk") != 0) {
+    if (usb_exfat_partition_index != UINT64_MAX &&
+        blockfs_mount(usb_exfat_partition_index, "/usbdisk") != 0) {
         console_write("[warn] /usbdisk USB block mount unavailable\n");
+    }
+    if (usb_fat32_partition_index != UINT64_MAX &&
+        blockfs_mount(usb_fat32_partition_index, "/usbboot") != 0) {
+        console_write("[warn] /usbboot USB FAT32 mount unavailable\n");
     }
     user_init_from_modules(module_request.response);
     scheduler_dump_tasks();

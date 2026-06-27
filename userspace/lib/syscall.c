@@ -83,6 +83,10 @@ uint64_t tpos_getdents(const char *path, uint64_t index, struct dirent *dirent) 
     return tpos_syscall4(SYS_GETDENTS, (uint64_t)path, index, (uint64_t)dirent, sizeof(*dirent));
 }
 
+uint64_t tpos_write_file(const char *path, uint64_t offset, const void *buffer, uint64_t length) {
+    return tpos_syscall4(SYS_WRITE_FILE, (uint64_t)path, offset, (uint64_t)buffer, length);
+}
+
 uint64_t tpos_dup2(uint64_t old_fd, uint64_t new_fd) {
     return tpos_syscall2(SYS_DUP2, old_fd, new_fd);
 }

@@ -90,3 +90,8 @@
 - 2026-06-26: 新增 exFAT 测试用小型 sector transaction 对象，将固定 `/NEW.TXT` 的 bitmap/FAT/目录三扇区作为事务提交。
 - 2026-06-26: 将 exFAT 动态测试文件创建的 bitmap/FAT/目录项更新改为同一个 sector transaction 提交。
 - 2026-06-26: 将 exFAT 测试文件删除的目录项删除和 bitmap/FAT 回收改为同一个 sector transaction 提交。
+- 2026-06-26: 将 exFAT 测试文件创建路径改为按请求 cluster 数分配，为后续按文件大小分配空间做准备。
+- 2026-06-26: 新增 exFAT 测试文件写入时自动扩容并放大 xHCI 传输/事件环，通过 virtio 与 USB 两条路径写入 5000 字节后读回验证。
+- 2026-06-26: 新增 xHCI Mass Storage 动态 transfer/event ring 回绕状态机，并用 USB scratch 写读压力自测覆盖 event、bulk-in、bulk-out 回绕。
+- 2026-06-27: 扩展 xHCI root port 扫描，记录并通过 `usb` 命令显示第二个连接端口，为识别 QEMU `usb-kbd` 做准备。
+- 2026-06-27: 为 QEMU USB 测试盘新增第二个 FAT32 分区并挂载为 `/usbboot`，验证 FAT32 可通过 USB Mass Storage 只读访问。
